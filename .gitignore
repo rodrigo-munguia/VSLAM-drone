@@ -1,0 +1,10 @@
+install/*
+log/*
+logs/*
+build/*
+.vscode/*
+Dataset_sample/*
+/*.png
+/*.csv
+exp*/
+figures/
