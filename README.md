@@ -1,9 +1,9 @@
 
-# Hybrid VSLAM
+# EKF-MonoSLAM Aided by Range- to-Base Measurements
 
-Ros 2 implementation of the Simultaneous Control Localization and Mapping (SCLAM) approach described in the paper:
+Ros2-based implementation of the Simultaneous Localization and Mapping (SLAM) approach described in the paper:
 
-"A SCLAM System for UAVs in GPS-denied Environments" (https://www.mdpi.com/2504-446X/9/1/69)
+"UAV Navigation Using EKF-MonoSLAM Aided by Range- to-Base Measurements" (xxxx)
  
 
 ![](figures/Graphical_abstract.png)
@@ -16,11 +16,12 @@ The Hybrid VSLAM is composed of the following ROS 2 components and nodes (See ht
 **ROS 2 components:** 
 
 -  **Local SLAM** The local SLAM component implements a filter-based, visual SLAM system with a state vector size constrained to ensure real-time operation. On its own, this component generates up-to-metric-scale (world-referenced) estimates of both the robot's state and a local feature map. However, because older features are removed from the state vector to maintain real-time performance, previously visited areas of the environment cannot be recognized. Consequently, the accumulated positional drift cannot be corrected by this process alone.
-- **Global SLAM** The global SLAM component processes keyframes produced by the local SLAM system to construct and maintain a global, persistent map of the environment. It also corrects accumulated drift when loops are detected. This component employs optimization-based techniques, such as bundle adjustment and graph-based SLAM, to achieve its objectives.
+- **Global SLAM** Not used.
 -  **Control**  The control component implements the following high-level control strategies as described in the paper: (i) waypoint control, (ii) visual marker-based control, (iii) area exploration, and (iv) return-to-home.
 -  **Webot package** Defines the virtual environment (world) used for experiments, including the UAV (robot) and its low-level controller, simulated using the Webots platform.
 -  **Webot bridge** This component interfaces certain sensor readings from the virtual robot with the format required by the SCLAM system.
-- **Plot** The plot component implements a 3d scene of the robot's pose and trajectory as well as a map of visual features.
+- **Plot** (Deprecated) Based on OpenCV-VIZ, the plot component implements a 3d scene of the robot's pose and trajectory as well as a map of visual features.
+- **Plot2** The plot component implements a 3d scene of the robot's pose and trajectory as well as a map of visual features.
 
 
 **ROS 2 nodes:**
@@ -37,12 +38,14 @@ The Hybrid VSLAM is composed of the following ROS 2 components and nodes (See ht
 
 3.- OpenCV with extra modules installed (opencv_contrib) (tested with OpenCV version 4.2.0), https://opencv.org/ 
     The following OpenCV contrib modules are also required or recommended:
-    - VIZ (Required). VIZ requires VTK support (tested with version 8.1.0).
+    - VIZ (Required for old Plot module). VIZ requires VTK support (tested with version 8.1.0).
     - SFM (Recommended). For SFM dependencies check: https://docs.opencv.org/4.x/db/db8/tutorial_sfm_installation.html Note. For compilling OpenCV with SFM, Ceres solver library http://ceres-solver.org/ version < 2.0 is required (tested with 1.14). 
 
 4.- GTSAM c++ library (tested with version 4.1.1) https://gtsam.org/
 
 5.- Webots Simulator (tested with version R2023a) https://cyberbotics.com/
+
+6.- ImGui (tested with version v1.92.0) https://github.com/ocornut/imgui
 
 **Usage:**
 
@@ -57,7 +60,7 @@ colcon build
 
 2.- After successfully compiling, launch the components using:
 ```
-./launch.sh
+./launch2.sh
 ```
 At this point, the following elements must be launched: (i) the Webots virtual world, (ii) Viz-viewer, (iii) a terminal displaying the state of the Webots component, and (iv) a terminal showing the following menu:
 ```
