@@ -1,9 +1,9 @@
 
 # EKF-MonoSLAM Aided by Range- to-Base Measurements
 
-Ros2-based implementation of the Simultaneous Localization and Mapping (SLAM) approach described in the paper:
+C++ Ros2-based implementation of the Simultaneous Localization and Mapping (SLAM) approach described in the paper:
 
-"UAV Navigation Using EKF-MonoSLAM Aided by Range- to-Base Measurements" (xxxx)
+"UAV Navigation Using EKF-MonoSLAM Aided by Range-to-Base Measurements" (https://doi.org/10.3390/drones9080570)
  
 
 ![](figures/Graphical_abstract.png)
