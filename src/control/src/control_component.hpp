@@ -34,12 +34,18 @@
 #include "sensor_msgs/msg/range.hpp"
 #include "geometry_msgs/msg/point_stamped.hpp"
 #include "geometry_msgs/msg/twist.hpp"
+#include "nav_msgs/msg/odometry.hpp"
+#include "std_srvs/srv/set_bool.hpp"
 
 #include "parameters.hpp"
 #include "../../localslam/src/localslam_types.hpp"
 #include "../../common/Vision/vision.hpp"
 #include <opencv2/aruco.hpp>
+#if __has_include(<cv_bridge/cv_bridge.hpp>)
+#include <cv_bridge/cv_bridge.hpp>
+#else
 #include <cv_bridge/cv_bridge.h>
+#endif
 
 #include "control_types.hpp"
 #include "logger.hpp"
@@ -91,19 +97,20 @@ namespace control
     rclcpp::Subscription<geometry_msgs::msg::PointStamped>::SharedPtr sub_Gps_;
 
     rclcpp::Subscription<interfaces::msg::Robotstate>::SharedPtr sub_Slam_;
+    rclcpp::Subscription<nav_msgs::msg::Odometry>::SharedPtr sub_Odom_;
 
-    rclcpp::Subscription<interfaces::msg::Frame>::SharedPtr sub_Frame_;        
+    rclcpp::Subscription<interfaces::msg::Frame>::SharedPtr sub_Frame_;
 
     // declare publishers
-    rclcpp::Publisher<geometry_msgs::msg::Twist>::SharedPtr pub_cmd_vel_; 
-    
-    
-    // declare Services      
+    rclcpp::Publisher<geometry_msgs::msg::Twist>::SharedPtr pub_cmd_vel_;
+
+    // declare Services
       rclcpp::Service<interfaces::srv::SimpleServ>::SharedPtr srv_control_run_;
       void Handle_control_run_service(const std::shared_ptr<interfaces::srv::SimpleServ::Request> request,std::shared_ptr<interfaces::srv::SimpleServ::Response> response);
-    
+
     // declare clients
       rclcpp::Client<interfaces::srv::SimpleServ>::SharedPtr client_ekf_run_;
+      rclcpp::Client<std_srvs::srv::SetBool>::SharedPtr client_ekf_enable_;
       rclcpp::Client<interfaces::srv::SimpleServ>::SharedPtr client_gslam_run_;
       rclcpp::Client<interfaces::srv::SimpleServ>::SharedPtr client_webot_run_;
       rclcpp::Client<interfaces::srv::SimpleServ>::SharedPtr client_plot_;
@@ -130,10 +137,28 @@ namespace control
     bool explore_area(double x_a,double y_a);
     bool go_home();
 
-    void Imu_callback(const sensor_msgs::msg::Imu & msg);   
+    void Imu_callback(const sensor_msgs::msg::Imu & msg);
     void Gps_callback(const geometry_msgs::msg::PointStamped & msg);
     void Slam_callback(const interfaces::msg::Robotstate & msg);
+    /** A5b odometry mode: Robotstate.radius_uncertainty only (no pose). */
+    void Slam_radius_only_callback(const interfaces::msg::Robotstate & msg);
+    void Odometry_callback(const nav_msgs::msg::Odometry & msg);
     void Frame_callback(const interfaces::msg::Frame & msg);
+
+    // Odometry / legacy SLAM yaw latch (public or internal per interface)
+    bool slam_yaw_init_flag_{false};
+    double slam_init_yaw_{0.0};
+    double slam_init_z_{0.0};
+
+    // A6: radius accept gate for coordinated reset (odometry-mode radius-only).
+    // While false, Slam_radius_only_callback drops messages (including queued
+    // pre-reset callbacks). Re-armed on the next accepted Odometry pose update
+    // whose header.stamp is not older than radius_reset_stamp_ (rejects queued
+    // pre-reset Odometry that would otherwise re-arm and admit stale radius).
+    bool radius_feedback_armed_{false};
+    bool radius_reset_stamp_valid_{false};
+    rclcpp::Time radius_reset_stamp_{0, 0, RCL_ROS_TIME};
+    void invalidate_cached_radius(bool request_ekf_reinit);
 
     void SaveScreenShot();
     

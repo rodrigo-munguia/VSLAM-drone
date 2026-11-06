@@ -1,10 +1,23 @@
-install/*
-log/*
-logs/*
-build/*
-.vscode/*
-Dataset_sample/*
+# Conventional colcon trees
+build/
+install/
+log/
+
+# Legacy / slice overlays (do not recreate in normal workflow)
+build_a*/
+install_a*/
+log_a*/
+
+# Runtime / local clutter
+logs/
+.vscode/
+Dataset_sample/
+exp*/
+__pycache__/
+*.pyc
+imgui.ini
+
+# Large / ephemeral outputs (keep docs/evidence explicitly if needed)
 /*.png
 /*.csv
-exp*/
-
+logfile_*.csv

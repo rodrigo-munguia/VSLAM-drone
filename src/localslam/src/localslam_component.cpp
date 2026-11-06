@@ -36,11 +36,22 @@
 #include "interfaces/srv/l_spos_update.hpp"
 #include "geometry_msgs/msg/point.h"
 #include "ekf.hpp"
-//#include <tf2/LinearMath/Matrix3x3.h>
 #include <tf2/LinearMath/Quaternion.h>
 #include "../../common/Transforms/Ra2b_TO_Quat_a2b.hpp"
 #include "../../common/Transforms/Euler_to_Ra2b.hpp"
+#if __has_include(<cv_bridge/cv_bridge.hpp>)
+#include <cv_bridge/cv_bridge.hpp>
+#else
 #include <cv_bridge/cv_bridge.h>
+#endif
+#include <stdexcept>
+#include <limits>
+#include "sensor_input_plan.hpp"
+#include "range_frame_association.hpp"
+#include "odometry_conversions.hpp"
+#include "map_path_conversions.hpp"
+#include "nav_msgs/msg/odometry.hpp"
+#include "camera_calibration.hpp"
 
 //#include <Matrix3x3.h>
 
@@ -58,40 +69,72 @@ namespace localslam
 EKFslam::EKFslam(const rclcpp::NodeOptions & options)
 : Node("lslam", options)
 {
-  // Create a callback function for when messages are received.
-  // Variations of this function also exist using, for example, UniquePtr for zero-copy transport.
   setParameters();
 
-  // Set subscribers
-  sub_Alt_ = this->create_subscription<interfaces::msg::Alt>("Altitude_topic", 10, std::bind(&EKFslam::Alt_callback, this, _1)); 
-  sub_Att_ = this->create_subscription<interfaces::msg::Att>("Attitude_topic", 10, std::bind(&EKFslam::Att_callback, this, _1));
-  sub_Gps_ = this->create_subscription<interfaces::msg::Gps>("Gps_topic", 10, std::bind(&EKFslam::Gps_callback, this, _1)); 
-  sub_Range_ = this->create_subscription<interfaces::msg::Range>("Range_topic", 10, std::bind(&EKFslam::Range_callback, this, _1));
-  sub_Frame_ = this->create_subscription<interfaces::msg::Frame>("Frame_topic", 10, std::bind(&EKFslam::Frame_callback, this, _1));        
-  sub_Spd_ = this->create_subscription<interfaces::msg::Spd>("Speed_topic", 10, std::bind(&EKFslam::Speed_callback, this, _1));        
-  sub_OdoD_ = this->create_subscription<interfaces::msg::Ododiff>("OdometryD_topic",10, std::bind(&EKFslam::OdoDiff_callback, this, _1)); 
-  sub_OdoV_ = this->create_subscription<interfaces::msg::Odovw>("OdometryV_topic",10, std::bind(&EKFslam::OdoVW_callback, this, _1)); 
-  sub_Rangetobase_ = this->create_subscription<interfaces::msg::Rangetobase>("Rangetobase_topic",10, std::bind(&EKFslam::Rangetobase_callback, this, _1)); 
-  
-  // Set services
-  srv_ekf_run_ = this->create_service<interfaces::srv::SimpleServ>("ekf_run_service",std::bind(&EKFslam::Handle_ekf_run_service, this,_1,_2));
-  srv_pos_update_ = this->create_service<interfaces::srv::LSposUpdate>("local_slam_pos_update",std::bind(&EKFslam::Handle_pos_update_service, this,_1,_2)  );
+  validate_altitude_input_mode(PAR.Altitude_input_mode);
+  // Throws on unsupported Sensor_input_mode / altitude combo
+  {
+    SensorInputPlan plan = make_sensor_input_plan(PAR.Sensor_input_mode);
+    apply_altitude_input_mode(plan, PAR.Altitude_input_mode);
+  }
+  if (PAR.Pressure_reference_policy != "first_valid") {
+    throw std::runtime_error(
+      "Unsupported Pressure_reference_policy='" + PAR.Pressure_reference_policy +
+      "'. Use 'first_valid'.");
+  }
+  if (PAR.Camera_info_qos_reliability != "reliable" &&
+    PAR.Camera_info_qos_reliability != "best_effort")
+  {
+    throw std::runtime_error(
+      "Unsupported Camera_info_qos_reliability='" +
+      PAR.Camera_info_qos_reliability + "'. Use 'reliable' or 'best_effort'.");
+  }
+  {
+    pressure_altitude::ConvertConfig cfg;
+    cfg.t0_K = PAR.Pressure_t0_K;
+    cfg.p_min_Pa = PAR.Pressure_min_Pa;
+    cfg.p_max_Pa = PAR.Pressure_max_Pa;
+    cfg.z_lever_arm_m = PAR.Pressure_z_lever_arm_m;
+    cfg.expected_frame_id = PAR.Pressure_expected_frame_id;
+    pressure_converter_.configure(cfg);
+  }
 
-  ekf_thread_loop_run = true; // main ekf  loop flag 
-  ekf_loop_ = thread(&EKFslam::EKF_LOOP,this);
-  
-  // Set publishers
-  pub_lslam_data_ = create_publisher<interfaces::msg::Lslam>("lslam_data_topic",10);
-  pub_kf_ = create_publisher<interfaces::msg::Kf>("Kf_topic",10);pub_kf_ = create_publisher<interfaces::msg::Kf>("Kf_topic",10);
-  pub_kf_cl_ = create_publisher<interfaces::msg::Kf>("Kf_cl_topic",10);
-  pub_robot_state_ =  create_publisher<interfaces::msg::Robotstate>("Robotstate_topic",10);
+  setup_subscriptions();
 
-    
+  // Legacy + standard control services share set_ekf_steps_running / request_ekf_reinit
+  srv_ekf_run_ = this->create_service<interfaces::srv::SimpleServ>(
+    "ekf_run_service",
+    std::bind(&EKFslam::Handle_ekf_run_service, this, _1, _2));
+  srv_pos_update_ = this->create_service<interfaces::srv::LSposUpdate>(
+    "local_slam_pos_update",
+    std::bind(&EKFslam::Handle_pos_update_service, this, _1, _2));
+  srv_enable_ = this->create_service<std_srvs::srv::SetBool>(
+    "~/enable",
+    std::bind(&EKFslam::Handle_enable_service, this, _1, _2));
+  srv_reset_ = this->create_service<std_srvs::srv::Trigger>(
+    "~/reset",
+    std::bind(&EKFslam::Handle_reset_service, this, _1, _2));
 
-  // Use a timer to schedule periodic message publishing.
+  pub_lslam_data_ = create_publisher<interfaces::msg::Lslam>("lslam_data_topic", 10);
+  pub_kf_ = create_publisher<interfaces::msg::Kf>("Kf_topic", 10);
+  pub_kf_cl_ = create_publisher<interfaces::msg::Kf>("Kf_cl_topic", 10);
+  pub_robot_state_ = create_publisher<interfaces::msg::Robotstate>("Robotstate_topic", 10);
+  pub_odometry_ = create_publisher<nav_msgs::msg::Odometry>("~/odometry", 10);
+  // A4: changing local sparse map (XYZ) and bounded trajectory in odom parent.
+  pub_landmarks_ = create_publisher<sensor_msgs::msg::PointCloud2>("~/landmarks", 10);
+  pub_path_ = create_publisher<nav_msgs::msg::Path>("~/path", 10);
+  path_msg_.header.frame_id = PAR.Odometry_frame_id;
+  {
+    rclcpp::QoS qos_ref(rclcpp::KeepLast(1));
+    qos_ref.reliable();
+    qos_ref.transient_local();
+    pub_estimator_ref_ =
+      create_publisher<interfaces::msg::EstimatorReference>("~/estimator_reference", qos_ref);
+  }
+
+  // Initialize worker flags before starting EKF_LOOP (avoid publishing on
+  // null publishers if ekf_steps_loop_run were left uninitialized).
   new_slam_state_flag = false;
-  //timer_ = create_wall_timer(33ms, std::bind(&EKFslam::on_timer_pub_lslam_data, this));
-
   re_init_sys = false;
   ekf_steps_loop_run = false;
   get_log_flag = false;
@@ -99,11 +142,148 @@ EKFslam::EKFslam(const rclcpp::NodeOptions & options)
   activate_CL_uncertainty_flag = false;
   activate_ekf_visual_update_flag = false;
 
- // version info.
+  ekf_thread_loop_run = true;
+  ekf_loop_ = thread(&EKFslam::EKF_LOOP, this);
+
+  if (PAR.Calibration_source != "yaml" && PAR.Calibration_source != "camera_info") {
+    throw std::runtime_error(
+      "Unsupported Calibration_source='" + PAR.Calibration_source +
+      "'. Use 'yaml' or 'camera_info'.");
+  }
+  if (PAR.Camera_info_image_path != "raw" && PAR.Camera_info_image_path != "rectified") {
+    throw std::runtime_error(
+      "Unsupported Camera_info_image_path='" + PAR.Camera_info_image_path +
+      "'. Use 'raw' or 'rectified'.");
+  }
+  // yaml mode: calibration is ready from parameters at startup.
+  calibration_ready_ = (PAR.Calibration_source == "yaml");
+  allow_new_geometry_after_reset_ = true;
+
+  RCLCPP_INFO(
+    this->get_logger(),
+    "EKFslam Sensor_input_mode=%s Altitude_input_mode=%s Calibration_source=%s "
+    "Camera_info_image_path=%s",
+    PAR.Sensor_input_mode.c_str(), PAR.Altitude_input_mode.c_str(),
+    PAR.Calibration_source.c_str(), PAR.Camera_info_image_path.c_str());
+
   std::cout << cv::getBuildInformation() << std::endl;
   arma::arma_version ver;
-  std::cout << "ARMA version: "<< ver.as_string() << std::endl;
-  
+  std::cout << "ARMA version: " << ver.as_string() << std::endl;
+}
+
+void EKFslam::setup_subscriptions()
+{
+  SensorInputPlan plan = make_sensor_input_plan(PAR.Sensor_input_mode);
+  apply_altitude_input_mode(plan, PAR.Altitude_input_mode);
+
+  if (plan.sub_rangetobase) {
+    sub_Rangetobase_ = this->create_subscription<interfaces::msg::Rangetobase>(
+      "Rangetobase_topic", 10,
+      std::bind(&EKFslam::Rangetobase_callback, this, _1));
+  }
+
+  if (plan.sub_image_std) {
+    sub_Image_ = this->create_subscription<sensor_msgs::msg::Image>(
+      "~/image", 10, std::bind(&EKFslam::Image_std_callback, this, _1));
+  }
+  if (PAR.Calibration_source == "camera_info") {
+    // VOLATILE durability (not transient_local). Reliability is configurable.
+    rclcpp::QoS qos(rclcpp::KeepLast(5));
+    qos.durability_volatile();
+    if (PAR.Camera_info_qos_reliability == "best_effort") {
+      qos.best_effort();
+    } else {
+      qos.reliable();
+    }
+    sub_CameraInfo_ = this->create_subscription<sensor_msgs::msg::CameraInfo>(
+      "~/camera_info", qos,
+      std::bind(&EKFslam::CameraInfo_callback, this, _1));
+    RCLCPP_INFO(
+      this->get_logger(),
+      "Subscribed ~/camera_info (Calibration_source=camera_info, "
+      "reliability=%s, durability=volatile); "
+      "visual frames wait for first valid calibration",
+      PAR.Camera_info_qos_reliability.c_str());
+  }
+  if (plan.sub_imu_std) {
+    sub_Imu_ = this->create_subscription<sensor_msgs::msg::Imu>(
+      "~/imu", 10, std::bind(&EKFslam::Imu_std_callback, this, _1));
+  }
+  if (plan.sub_body_velocity_std) {
+    sub_BodyVel_ =
+      this->create_subscription<geometry_msgs::msg::TwistWithCovarianceStamped>(
+        "~/body_velocity", 10,
+        std::bind(&EKFslam::BodyVelocity_std_callback, this, _1));
+  }
+  if (plan.sub_downward_range_std) {
+    sub_DownwardRange_ = this->create_subscription<sensor_msgs::msg::Range>(
+      "~/downward_range", 10,
+      std::bind(&EKFslam::DownwardRange_std_callback, this, _1));
+  }
+  // Exclusive altitude sources (A9).
+  if (plan.sub_altitude_std) {
+    sub_MavrosAlt_ = this->create_subscription<mavros_msgs::msg::Altitude>(
+      "~/altitude", 10, std::bind(&EKFslam::Altitude_std_callback, this, _1));
+    RCLCPP_INFO(
+      this->get_logger(),
+      "Altitude source: mavros_msgs/Altitude on ~/altitude "
+      "(Altitude_input_mode=derived_altitude)");
+  }
+  if (plan.sub_pressure_std) {
+    sub_Pressure_ = this->create_subscription<sensor_msgs::msg::FluidPressure>(
+      "~/pressure", 10,
+      std::bind(&EKFslam::FluidPressure_std_callback, this, _1));
+    RCLCPP_INFO(
+      this->get_logger(),
+      "Altitude source: sensor_msgs/FluidPressure on ~/pressure "
+      "(Altitude_input_mode=fluid_pressure); "
+      "FluidPressure.variance ignored — Sigma_alt_update [m] is authoritative");
+  }
+
+  if (plan.sub_alt_legacy) {
+    sub_Alt_ = this->create_subscription<interfaces::msg::Alt>(
+      "Altitude_topic", 10, std::bind(&EKFslam::Alt_callback, this, _1));
+  }
+  if (plan.sub_att_legacy) {
+    sub_Att_ = this->create_subscription<interfaces::msg::Att>(
+      "Attitude_topic", 10, std::bind(&EKFslam::Att_callback, this, _1));
+  }
+  if (plan.sub_range_legacy) {
+    sub_Range_ = this->create_subscription<interfaces::msg::Range>(
+      "Range_topic", 10, std::bind(&EKFslam::Range_callback, this, _1));
+  }
+  if (plan.sub_frame_legacy) {
+    sub_Frame_ = this->create_subscription<interfaces::msg::Frame>(
+      "Frame_topic", 10, std::bind(&EKFslam::Frame_callback, this, _1));
+  }
+  if (plan.sub_spd_legacy) {
+    sub_Spd_ = this->create_subscription<interfaces::msg::Spd>(
+      "Speed_topic", 10, std::bind(&EKFslam::Speed_callback, this, _1));
+  }
+  if (plan.sub_gps_legacy) {
+    sub_Gps_ = this->create_subscription<interfaces::msg::Gps>(
+      "Gps_topic", 10, std::bind(&EKFslam::Gps_callback, this, _1));
+  }
+  if (plan.sub_odo_d_legacy) {
+    sub_OdoD_ = this->create_subscription<interfaces::msg::Ododiff>(
+      "OdometryD_topic", 10, std::bind(&EKFslam::OdoDiff_callback, this, _1));
+  }
+  if (plan.sub_odo_v_legacy) {
+    sub_OdoV_ = this->create_subscription<interfaces::msg::Odovw>(
+      "OdometryV_topic", 10, std::bind(&EKFslam::OdoVW_callback, this, _1));
+  }
+
+  RCLCPP_INFO(
+    this->get_logger(),
+    "Subscription plan: standard_migrated=%d rangetobase=%d "
+    "(legacy frame/att/spd/range/alt = %d/%d/%d/%d/%d)",
+    plan.use_standard_migrated ? 1 : 0,
+    plan.sub_rangetobase ? 1 : 0,
+    plan.sub_frame_legacy ? 1 : 0,
+    plan.sub_att_legacy ? 1 : 0,
+    plan.sub_spd_legacy ? 1 : 0,
+    plan.sub_range_legacy ? 1 : 0,
+    plan.sub_alt_legacy ? 1 : 0);
 }
 //--------------------------------------------------------------------------
 EKFslam::~EKFslam()
@@ -147,14 +327,44 @@ void EKFslam::EKF_LOOP()
             // tell the ekf object that the system must be initialized again
             ekf.set_ekf_initialized_statet(false);         
             re_init_sys = false;
+            // A4: clear trajectory and publish empty landmark cloud so consumers
+            // drop the previous local map (custom Lslam still follows re-init).
+            clear_and_publish_path();
+            pub_empty_landmarks();
+            map_has_visual_state_ = false;
           }      
-        mutex_init_system.unlock();  
+        mutex_init_system.unlock();
+
+        // A8: apply CameraInfo intrinsics to the EKF object (PAR is by-value copy).
+        {
+          std::lock_guard<std::mutex> lock(mutex_cal_);
+          if (camera_cal_pending_apply_ && calibration_ready_) {
+            ekf.set_camera_intrinsics(
+              applied_intrinsics_.width,
+              applied_intrinsics_.height,
+              applied_intrinsics_.fc_u,
+              applied_intrinsics_.fc_v,
+              applied_intrinsics_.cc_u,
+              applied_intrinsics_.cc_v,
+              applied_intrinsics_.alpha_c,
+              applied_intrinsics_.distortions);
+            camera_cal_pending_apply_ = false;
+          }
+        }
 
       if (ekf.get_ekf_initialized_state() == false)
         {   
             // Initialize system state
-            dat = getData();            
-            ekf.system_init(dat);           
+            dat = getData();
+            const bool was_init = ekf.get_ekf_initialized_state();
+            ekf.system_init(dat);
+            if (!was_init && ekf.get_ekf_initialized_state()) {
+              ++estimator_epoch_id_;
+              epoch_heading_time_ms_ =
+                (dat.att.time != 0) ? dat.att.time : dat.time;
+              epoch_yaw_at_home_ = ekf.get_yaw_at_home();
+              publish_estimator_reference_from_ekf(ekf, dat);
+            }
         }
       else
         {          
@@ -162,15 +372,20 @@ void EKFslam::EKF_LOOP()
             dat = getData();  // get data from dataset/actual robot           
             
             ekf.ekf_step(dat); // perform a filter step
+            if (ekf.consume_altitude_home_latched_event()) {
+              publish_estimator_reference_from_ekf(ekf, dat);
+            }
             
             //------- after ekf step publish stuff!!! --------------------------------------
-                // check if the robot state has been updated, if so, then publish
+                // Consistent snapshot: custom Robotstate + standard ~/odometry
                 arma::vec::fixed<13> x_r;
-                double radius_uncertainty; 
-                if (ekf.get_RobotState(x_r,radius_uncertainty) == true)
+                arma::mat::fixed<13, 13> P_r;
+                double radius_uncertainty;
+                if (ekf.get_RobotStateSnapshot(x_r, P_r, radius_uncertainty) == true)
                 {
-                  pub_robot_state(x_r,radius_uncertainty);
-                }        
+                  pub_robot_state(x_r, radius_uncertainty);
+                  pub_odometry(x_r, P_r);
+                }
 
                 if (dat.data_type == "frame")
                 {
@@ -187,10 +402,16 @@ void EKFslam::EKF_LOOP()
                     // publish "intermediate" keyframe for closing-loop process
                     pub_kf_cl(KFCL);
                   }
-                    // publish local slam data             
+                    // publish local slam data (custom + A4 PointCloud2)
                     LOCALSLAM_DATA lslam_data;
                     lslam_data = ekf.get_lslam_data();
+                    if (!lslam_data.map_state.empty() ||
+                      !lslam_data.map_anchors.empty())
+                    {
+                      map_has_visual_state_ = true;
+                    }
                     pub_lslam_Data(lslam_data);
+                    pub_landmarks_from_lslam(lslam_data);
                 }
                 //LOCALSLAM_DATA lslam_data;
                 //    lslam_data = ekf.get_lslam_data();
@@ -291,6 +512,190 @@ void EKFslam::pub_robot_state(arma::vec::fixed<13> &x_r, double &radius_uncertai
 
   //cout << "slam  : " << x_r(7)<< " " << x_r(8) << "  " << x_r(9) << " " << x_r(3)  << endl;
 
+}
+
+bool EKFslam::pub_odometry(
+  const arma::vec::fixed<13> & x_r,
+  const arma::mat::fixed<13, 13> & P_r)
+{
+  double x[13];
+  double Prm[13 * 13];
+  for (int i = 0; i < 13; ++i) {
+    x[i] = x_r(i);
+    for (int j = 0; j < 13; ++j) {
+      Prm[i * 13 + j] = P_r(i, j);
+    }
+  }
+
+  odometry::PublicOdometry pub;
+  if (!odometry::convert_euler_state_to_public_odometry(x, Prm, pub)) {
+    RCLCPP_WARN_THROTTLE(
+      this->get_logger(), *this->get_clock(), 5000,
+      "Skipping ~/odometry: %s", pub.reject_reason.c_str());
+    return false;
+  }
+
+  nav_msgs::msg::Odometry msg;
+  // Publication-time stamp on the configured ROS clock (sim or system).
+  // Prediction remains wall-clock-driven; this is not a measurement epoch.
+  msg.header.stamp = this->get_clock()->now();
+  msg.header.frame_id = PAR.Odometry_frame_id;
+  msg.child_frame_id = PAR.Odometry_child_frame_id;
+
+  msg.pose.pose.position.x = pub.position[0];
+  msg.pose.pose.position.y = pub.position[1];
+  msg.pose.pose.position.z = pub.position[2];
+  msg.pose.pose.orientation.w = pub.quat_wxyz[0];
+  msg.pose.pose.orientation.x = pub.quat_wxyz[1];
+  msg.pose.pose.orientation.y = pub.quat_wxyz[2];
+  msg.pose.pose.orientation.z = pub.quat_wxyz[3];
+  for (int i = 0; i < 36; ++i) {
+    msg.pose.covariance[i] = pub.pose_covariance[i];
+  }
+
+  msg.twist.twist.linear.x = pub.twist_linear[0];
+  msg.twist.twist.linear.y = pub.twist_linear[1];
+  msg.twist.twist.linear.z = pub.twist_linear[2];
+  msg.twist.twist.angular.x = pub.twist_angular[0];
+  msg.twist.twist.angular.y = pub.twist_angular[1];
+  msg.twist.twist.angular.z = pub.twist_angular[2];
+  for (int i = 0; i < 36; ++i) {
+    msg.twist.covariance[i] = pub.twist_covariance[i];
+  }
+
+  pub_odometry_->publish(msg);
+
+  // A4 path: same accepted snapshot, same stamp/frame/orientation as odometry.
+  geometry_msgs::msg::PoseStamped ps;
+  ps.header = msg.header;
+  ps.pose = msg.pose.pose;
+  path_msg_.header = msg.header;
+  map_path::append_path_pose(path_msg_, ps, PAR.Path_max_poses);
+  pub_path_->publish(path_msg_);
+  return true;
+}
+
+void EKFslam::pub_landmarks_from_lslam(LOCALSLAM_DATA &lslam_data)
+{
+  std::vector<map_path::LandmarkXYZ> pts;
+  pts.reserve(lslam_data.map_state.size() + lslam_data.map_anchors.size());
+  for (const auto & p : lslam_data.map_state) {
+    pts.push_back({p.x, p.y, p.z});
+  }
+  for (const auto & p : lslam_data.map_anchors) {
+    pts.push_back({p.x, p.y, p.z});
+  }
+
+  std_msgs::msg::Header header;
+  header.stamp = this->get_clock()->now();
+  header.frame_id = PAR.Odometry_frame_id;
+  auto cloud = map_path::make_landmark_cloud(header, pts);
+  pub_landmarks_->publish(cloud);
+}
+
+void EKFslam::pub_empty_landmarks()
+{
+  std_msgs::msg::Header header;
+  header.stamp = this->get_clock()->now();
+  header.frame_id = PAR.Odometry_frame_id;
+  pub_landmarks_->publish(map_path::make_empty_landmark_cloud(header));
+}
+
+void EKFslam::clear_and_publish_path()
+{
+  map_path::clear_path(path_msg_);
+  path_msg_.header.stamp = this->get_clock()->now();
+  path_msg_.header.frame_id = PAR.Odometry_frame_id;
+  pub_path_->publish(path_msg_);
+}
+
+builtin_interfaces::msg::Time EKFslam::stamp_from_ms(long int time_ms)
+{
+  builtin_interfaces::msg::Time t;
+  if (time_ms < 0) {
+    t.sec = 0;
+    t.nanosec = 0;
+    return t;
+  }
+  t.sec = static_cast<int32_t>(time_ms / 1000);
+  t.nanosec = static_cast<uint32_t>((time_ms % 1000) * 1000000L);
+  return t;
+}
+
+void EKFslam::publish_estimator_reference_invalid()
+{
+  if (!pub_estimator_ref_) {
+    return;
+  }
+  interfaces::msg::EstimatorReference msg;
+  msg.header.stamp = this->get_clock()->now();
+  msg.header.frame_id = PAR.Odometry_frame_id;
+  msg.epoch_id = estimator_epoch_id_;
+  msg.valid = false;
+  msg.heading_valid = false;
+  msg.altitude_update_enabled = PAR.Altitude_update;
+  msg.altitude_valid = false;
+  msg.robot_init_x = PAR.Robot_init_x;
+  msg.robot_init_y = PAR.Robot_init_y;
+  msg.robot_init_z = PAR.Robot_init_z;
+  pub_estimator_ref_->publish(msg);
+  estimator_ref_published_valid_ = false;
+  RCLCPP_INFO(
+    this->get_logger(),
+    "EstimatorReference invalidated (epoch_id=%llu)",
+    static_cast<unsigned long long>(estimator_epoch_id_));
+}
+
+void EKFslam::publish_estimator_reference_from_ekf(
+  ::EKF & filter, const DATA & heading_dat)
+{
+  if (!pub_estimator_ref_) {
+    return;
+  }
+  interfaces::msg::EstimatorReference msg;
+  msg.header.stamp = this->get_clock()->now();
+  msg.header.frame_id = PAR.Odometry_frame_id;
+  msg.epoch_id = estimator_epoch_id_;
+  msg.valid = true;
+  msg.robot_init_x = PAR.Robot_init_x;
+  msg.robot_init_y = PAR.Robot_init_y;
+  msg.robot_init_z = PAR.Robot_init_z;
+
+  msg.heading_valid = true;
+  // Use the frozen init-epoch heading (not the current step's observation).
+  (void)heading_dat;
+  msg.heading_stamp = stamp_from_ms(epoch_heading_time_ms_);
+  msg.yaw_at_home_internal = epoch_yaw_at_home_;
+  // Att.yaw ≈ -yaw_ENU (+ noise). Public ENU equivalent for R_z(-yaw_enu).
+  msg.yaw_enu_equivalent = -msg.yaw_at_home_internal;
+
+  msg.altitude_update_enabled = PAR.Altitude_update;
+  if (!PAR.Altitude_update) {
+    msg.altitude_valid = true;
+    msg.altitude_stamp = msg.heading_stamp;
+    msg.altitude_home_up = std::numeric_limits<double>::quiet_NaN();
+  } else if (filter.altitude_home_ready()) {
+    msg.altitude_valid = true;
+    msg.altitude_stamp = stamp_from_ms(filter.altitude_home_time_ms());
+    // alt_at_home_ is after Alt_h_2_d; invert to +up raw height domain.
+    msg.altitude_home_up = filter.altitude_home_internal() *
+      (PAR.Alt_h_2_d == 0 ? 1.0 : (1.0 / static_cast<double>(PAR.Alt_h_2_d)));
+  } else {
+    msg.altitude_valid = false;
+    msg.altitude_home_up = std::numeric_limits<double>::quiet_NaN();
+  }
+
+  pub_estimator_ref_->publish(msg);
+  estimator_ref_published_valid_ = true;
+  RCLCPP_INFO(
+    this->get_logger(),
+    "EstimatorReference epoch_id=%llu heading_valid=%d altitude_valid=%d "
+    "yaw_enu=%.4f robot_init=(%.3f,%.3f,%.3f)",
+    static_cast<unsigned long long>(msg.epoch_id),
+    msg.heading_valid ? 1 : 0,
+    msg.altitude_valid ? 1 : 0,
+    msg.yaw_enu_equivalent,
+    msg.robot_init_x, msg.robot_init_y, msg.robot_init_z);
 }
 
 //--------------------------------------------------------------------------------------------------------------
@@ -508,61 +913,131 @@ void EKFslam::Handle_pos_update_service(const std::shared_ptr<interfaces::srv::L
 }
 
 //-----------------------------------------------------------------------------------------------------------------------------
-void EKFslam::Handle_ekf_run_service(const std::shared_ptr<interfaces::srv::SimpleServ::Request> request,std::shared_ptr<interfaces::srv::SimpleServ::Response> response) 
-    {       
-      if (request->cmd == 'r')
-      { 
-              
-          mutex_ekf_run.lock();
-            ekf_steps_loop_run = true; 
-          mutex_ekf_run.unlock();         
-          cout << "localslam-> request received: run ekf loop" << endl; 
-              
-      }
-      if (request->cmd == 's')
-      {
-          mutex_ekf_run.lock();
-          ekf_steps_loop_run = false; 
-          mutex_ekf_run.unlock();         
-          cout << "localslam-> request received: stop ekf loop" << endl;
-      } 
-      if (request->cmd == 'v')
-      {
-          mutex_vu.lock();
-            activate_ekf_visual_update_flag = true;
-          mutex_vu.unlock();         
-          cout << "localslam-> request received: activate visual updates" << endl;
-      }            
-      if (request->cmd == 'i')
-      {
-        mutex_init_system.lock();
-          re_init_sys = true;
-        mutex_init_system.unlock();
-        cout << "localslam-> request received: re-initialize ekf " << endl;  
-      }
-      if (request->cmd == '0')
-      {
-        mutex_log.lock();          
-          get_log_flag = true;
-        mutex_log.unlock();
-      }
-      if (request->cmd == 'u')
-      {
-        // activate/deactivate uncertaninty for Close Loop
-        mutex_ru.lock();
-          if(activate_CL_uncertainty == false)
-            activate_CL_uncertainty = true;
-          else
-            activate_CL_uncertainty = false;
-          activate_CL_uncertainty_flag = true;  
-        mutex_ru.unlock(); 
+void EKFslam::set_ekf_steps_running(bool running)
+{
+  mutex_ekf_run.lock();
+  ekf_steps_loop_run = running;
+  mutex_ekf_run.unlock();
+}
 
-      }
+void EKFslam::request_ekf_reinit()
+{
+  // Same semantics as legacy SimpleServ 'i': mark uninitialized on the
+  // worker thread. Altitude home is instance-owned and cleared with
+  // set_ekf_initialized_statet(false) / system_init.
+  publish_estimator_reference_invalid();
+  mutex_init_system.lock();
+  re_init_sys = true;
+  mutex_init_system.unlock();
+  // A8: geometry changes are accepted only after explicit re-init.
+  {
+    std::lock_guard<std::mutex> lock(mutex_cal_);
+    allow_new_geometry_after_reset_ = true;
+    map_has_visual_state_ = false;
+  }
+  // A9: clear pressure reference so the next valid FluidPressure re-latches.
+  reset_pressure_altitude_converter();
+  clear_pending_altitude_observations();
+}
 
+void EKFslam::reset_pressure_altitude_converter()
+{
+  pressure_converter_.reset_reference();
+  pressure_callback_generation_ = pressure_converter_.generation();
+  std::lock_guard<std::mutex> lock(mutex_pressure_wait_);
+  waiting_pressures_.clear();
+  waiting_pressures_dropped_ = 0;
+}
 
+void EKFslam::clear_pending_altitude_observations()
+{
+  // Drop buffered alt observations so a pre-reset sample cannot become the
+  // first post-reset altitude (ManageBuffer keeps one-per-type).
+  std::lock_guard<std::mutex> lock(mutex_dat);
+  for (int i = 0; i < static_cast<int>(DataBuffer.size()); ++i) {
+    if (DataBuffer[i].data_type == "alt") {
+      DataBuffer.erase(DataBuffer.begin() + i);
+      --i;
+    }
+  }
+}
 
-      response->response = true;
-    };
+void EKFslam::request_log_stats()
+{
+  mutex_log.lock();
+  get_log_flag = true;
+  mutex_log.unlock();
+}
+
+void EKFslam::toggle_cl_uncertainty()
+{
+  mutex_ru.lock();
+  activate_CL_uncertainty = !activate_CL_uncertainty;
+  activate_CL_uncertainty_flag = true;
+  mutex_ru.unlock();
+}
+
+void EKFslam::request_activate_visual_update()
+{
+  mutex_vu.lock();
+  activate_ekf_visual_update_flag = true;
+  mutex_vu.unlock();
+}
+
+void EKFslam::Handle_enable_service(
+  const std::shared_ptr<std_srvs::srv::SetBool::Request> request,
+  std::shared_ptr<std_srvs::srv::SetBool::Response> response)
+{
+  // Maps to SimpleServ 'r' / 's'. Enable before init is valid: the worker
+  // waits for attitude (or proceeds without) once running. Disable freezes
+  // steps; re-enable resumes without implicit reinit.
+  set_ekf_steps_running(request->data);
+  response->success = true;
+  response->message = request->data ? "ekf loop enabled" : "ekf loop disabled";
+  RCLCPP_INFO(this->get_logger(), "localslam-> ~/enable %s",
+    request->data ? "true" : "false");
+}
+
+void EKFslam::Handle_reset_service(
+  const std::shared_ptr<std_srvs::srv::Trigger::Request> /*request*/,
+  std::shared_ptr<std_srvs::srv::Trigger::Response> response)
+{
+  // Maps to SimpleServ 'i'. Works while enabled or disabled; does not clear
+  // DataBuffer (legacy 'i' did not either).
+  request_ekf_reinit();
+  response->success = true;
+  response->message = "ekf re-init requested";
+  RCLCPP_INFO(this->get_logger(), "localslam-> ~/reset");
+}
+
+void EKFslam::Handle_ekf_run_service(
+  const std::shared_ptr<interfaces::srv::SimpleServ::Request> request,
+  std::shared_ptr<interfaces::srv::SimpleServ::Response> response)
+{
+  if (request->cmd == 'r') {
+    set_ekf_steps_running(true);
+    cout << "localslam-> request received: run ekf loop" << endl;
+  }
+  if (request->cmd == 's') {
+    set_ekf_steps_running(false);
+    cout << "localslam-> request received: stop ekf loop" << endl;
+  }
+  if (request->cmd == 'v') {
+    request_activate_visual_update();
+    cout << "localslam-> request received: activate visual updates" << endl;
+  }
+  if (request->cmd == 'i') {
+    request_ekf_reinit();
+    cout << "localslam-> request received: re-initialize ekf " << endl;
+  }
+  if (request->cmd == '0') {
+    request_log_stats();
+  }
+  if (request->cmd == 'u') {
+    toggle_cl_uncertainty();
+  }
+  response->response = true;
+}
 
 //--------------------------------------------------------------------
  void EKFslam::log_data(STORE &data)

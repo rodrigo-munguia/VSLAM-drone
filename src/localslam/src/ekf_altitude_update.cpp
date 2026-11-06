@@ -1,4 +1,3 @@
-
 #include "ekf.hpp"
 /*
 % Initial States ***************************************************
@@ -12,51 +11,56 @@
 % Position states
 % x(7:9)= [x  y  z]  ->  Position in the navigation coordinate frame
 % (navigation to camera)
-% x(10:12)= [v_x v_y v_z]  -> Velocity in body coordinate frame.
+% x(10:12)= [v_x v_y v_z]  -> Velocity in body frame.
 */
 
 
-void EKF::Altitude_update(ALT &alt)
+bool EKF::Altitude_update(ALT &alt)
 {
+  bool newly_latched = false;
+  const double measured_alt = alt.altitude * PAR.Alt_h_2_d;
 
-    static bool f_initialized = false;
-    static double alt_at_home;
+  if (!alt_home_ready_) {
+    alt_at_home_ = measured_alt;
+    alt_home_time_ms_ = alt.time;
+    alt_home_ready_ = true;
+    alt_home_latched_event_ = true;
+    newly_latched = true;
+  }
 
-    double measured_alt = alt.altitude*PAR.Alt_h_2_d;
-   
-   if(f_initialized == false)
-    {
-        alt_at_home = measured_alt;
-        f_initialized = true;
-    }
-    if(f_initialized == true)
-    {        
-        double z =  measured_alt -  alt_at_home;     
+  const double z = measured_alt - alt_at_home_;
 
-        int x_len = x.size();
-        arma::mat H;
-        // Form jacobian
-        H.resize(1,x_len);
-        H(0,9) = 1; 
-        
-        double h = x(9);
-        double r = PAR.Sigma_alt_update;        
+  const int x_len = static_cast<int>(x.size());
+  arma::mat H;
+  H.resize(1, x_len);
+  H(0, 9) = 1;
 
-        arma::mat H_P = H*P;
+  const double h = x(9);
+  const double r = PAR.Sigma_alt_update;
 
-        arma::mat S = H_P*H.t() + r*r; // Innovation matrix
-        //arma::mat K = P*H.t()*arma::inv_sympd(S);
-        arma::mat K = P*H.t()*arma::inv(S); // Kalman gain
+  arma::mat H_P = H * P;
+  arma::mat S = H_P * H.t() + r * r;
+  arma::mat K = P * H.t() * arma::inv(S);
 
-        P = P - K*H_P;  // System Covariance matrix update 
- 
-        x = x + K*(z-h);  // System vector update
+  P = P - K * H_P;
+  x = x + K * (z - h);
 
-        int q = 10;
+  return newly_latched;
+}
 
-    }    
+void EKF::reset_altitude_home()
+{
+  alt_home_ready_ = false;
+  alt_at_home_ = 0.0;
+  alt_home_time_ms_ = 0;
+  alt_home_latched_event_ = false;
+}
 
-
-
-
+bool EKF::consume_altitude_home_latched_event()
+{
+  if (!alt_home_latched_event_) {
+    return false;
+  }
+  alt_home_latched_event_ = false;
+  return true;
 }

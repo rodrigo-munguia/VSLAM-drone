@@ -1,6 +1,8 @@
 #include "control_component.hpp"
+#include "go_home_ru.hpp"
 #include "../../common/Vision/vision.hpp"
 #include "../../common/Transforms/Euler_to_Ra2b.hpp"
+#include <cmath>
 using namespace std;
 
 
@@ -579,18 +581,25 @@ namespace control
             else
             {
                 // No Close Loop has been detected when going home..
-                // try to explore the uncertanty area.
+                // r_u = Robotstate.radius_uncertainty = sqrt(max(Pc_xx,Pc_yy)).
+                // A5b: available in odometry pose mode via radius-only subscription.
                  cout << "control -> No CL detected when going home.. " << endl;
-                 cout << "control -> Exploring area.. " << endl;
                  mutex_robot_state.lock();
                     ROBOT_STATE r = r_c; // get current robot state
                  mutex_robot_state.unlock();
 
-                 double r_u = r.r_u; // get robot uncertainty 
-                 double y_a = r_u; 
-                 double x_a = r_u; 
+                 double x_a = 0.0;
+                 double y_a = 0.0;
+                 if (go_home_ru::decide_explore(r.r_u, x_a, y_a) ==
+                     go_home_ru::ExploreDecision::SkipUnavailable)
+                 {
+                   cout << "control -> r_u unavailable (no finite "
+                           "Robotstate.radius_uncertainty yet); skipping "
+                           "uncertainty-area exploration." << endl;
+                 } else {
+                 cout << "control -> Exploring area.. " << endl;
                  bool succes = explore_area(x_a,y_a);
-                 
+
                     bool cl_loop_event = false;
                     mutex_cl.lock();
                         cl_loop_event = cl_flag;
@@ -605,18 +614,19 @@ namespace control
                         p.y = 0;
                         p.z = r_c.z;;
                         p.yaw = 0;
-                        bool succes = go_point(p);      
+                        bool succes = go_point(p);
                         //cout << "Control -> Going to home.. " << endl;
                         if(succes == true)
                         {
                             cout << "control -> Going to home Succes!!! " << endl;
-                            SaveScreenShot(); 
-                        }            
+                            SaveScreenShot();
+                        }
                     }
                     else
                     {
                         cout << "control-> No CL has been detected during exploration...." << endl;
-                    } 
+                    }
+                 }
 
             }       
 

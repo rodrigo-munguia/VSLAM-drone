@@ -2,7 +2,7 @@ cmake_minimum_required(VERSION 3.8)
 project(webotbridge)
 
 if(CMAKE_COMPILER_IS_GNUCXX OR CMAKE_CXX_COMPILER_ID MATCHES "Clang")
-  add_compile_options(-Wall -Wextra -Wpedantic -g -fpermissive)
+  add_compile_options(-Wall -Wextra -Wpedantic -g -fpermissive -DARMA_DONT_USE_WRAPPER -DARMA_USE_BLAS -DARMA_USE_LAPACK)
 endif()
 
 # find dependencies
@@ -12,15 +12,15 @@ find_package(rclcpp_components REQUIRED)
 find_package(rcutils REQUIRED)
 find_package(std_msgs REQUIRED)
 find_package(interfaces REQUIRED)
-find_package(cv_bridge REQUIRED)
 find_package(sensor_msgs REQUIRED)
 find_package(geometry_msgs REQUIRED)
-# uncomment the following section in order to fill in
-# further dependencies manually.
-find_package(OpenCV REQUIRED )
+find_package(nav_msgs REQUIRED)
+find_package(mavros_msgs REQUIRED)
 find_package(tf2 REQUIRED)
 find_package(tf2_ros REQUIRED)
 find_package(tf2_geometry_msgs REQUIRED)
+find_package(BLAS REQUIRED)
+find_package(LAPACK REQUIRED)
 
 
 include_directories(include)
@@ -54,16 +54,19 @@ target_compile_definitions(webotbridge_component
 #install(TARGETS dataset_node
 #  DESTINATION lib/${PROJECT_NAME})
 ament_target_dependencies(webotbridge_component
-  "interfaces"  
+  "interfaces"
   "rclcpp"
   "rclcpp_components"
   "std_msgs"
-  "OpenCV"
-  "cv_bridge"
   "sensor_msgs"
   "geometry_msgs"
-  "sensor_msgs"
-  "tf2")
+  "nav_msgs"
+  "mavros_msgs"
+  "tf2"
+  "tf2_ros"
+  "tf2_geometry_msgs"
+  "BLAS"
+  "LAPACK")
 
 
 rclcpp_components_register_nodes(webotbridge_component "webotbridge::WEBOTb")
@@ -85,14 +88,24 @@ install(TARGETS
 
 
 if(BUILD_TESTING)
-  find_package(ament_lint_auto REQUIRED)
-  # the following line skips the linter which checks for copyrights
-  # uncomment the line when a copyright and license is not present in all source files
-  #set(ament_cmake_copyright_FOUND TRUE)
-  # the following line skips cpplint (only works in a git repo)
-  # uncomment the line when this package is not in a git repo
-  #set(ament_cmake_cpplint_FOUND TRUE)
-  ament_lint_auto_find_test_dependencies()
+  find_package(ament_lint_auto QUIET)
+  if(ament_lint_auto_FOUND)
+    ament_lint_auto_find_test_dependencies()
+  endif()
+  find_package(ament_cmake_gtest QUIET)
+  if(ament_cmake_gtest_FOUND)
+    find_package(builtin_interfaces REQUIRED)
+    ament_add_gtest(test_gt_frame_conversions test/test_gt_frame_conversions.cpp)
+    if(TARGET test_gt_frame_conversions)
+      target_include_directories(test_gt_frame_conversions PRIVATE src)
+      ament_target_dependencies(test_gt_frame_conversions builtin_interfaces)
+    endif()
+    ament_add_gtest(test_gt_path_epoch test/test_gt_path_epoch.cpp)
+    if(TARGET test_gt_path_epoch)
+      target_include_directories(test_gt_path_epoch PRIVATE src)
+      ament_target_dependencies(test_gt_path_epoch nav_msgs geometry_msgs builtin_interfaces)
+    endif()
+  endif()
 endif()
 
 

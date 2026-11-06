@@ -8,10 +8,15 @@ data_files = []
 data_files.append(('share/ament_index/resource_index/packages', ['resource/' + package_name]))
 data_files.append(('share/' + package_name + '/launch', ['launch/robot_launch.py']))
 data_files.append(('share/' + package_name + '/worlds', [
-    'worlds/mars.wbt','worlds/hall.wbt','worlds/.mavic_world.wbproj','worlds/marker23.png'
+    'worlds/mars.wbt',
+    'worlds/hall.wbt',
+    'worlds/hall2.wbt',
+    'worlds/my_world.wbt',
+    'worlds/my_world_x.wbt',
+    'worlds/marker23.png',
 ]))
 data_files.append(('share/' + package_name + '/resource', [
-    'resource/webot_robot.urdf'
+    'resource/webot_robot.urdf',
 ]))
 data_files.append(('share/' + package_name, ['package.xml']))
 

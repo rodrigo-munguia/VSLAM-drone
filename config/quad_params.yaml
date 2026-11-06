@@ -12,13 +12,46 @@
     Base_location: [0.0 ,0.0, 0.0] #  for mars location
     #Base_location: [1.45 ,7.54425, 0.1]  # for factory environment
     Sigma_rangetobase: 0.1  # for error noise added to range to base measurements (m)
+    # A8: CameraInfo matching A6 mars / localslam Mono_cam_* (raw path, D=0).
+    Publish_camera_info: true
+    Camera_width: 400
+    Camera_height: 240
+    Camera_fc_u: 200.0
+    Camera_fc_v: 200.0
+    Camera_cc_u: 200.0
+    Camera_cc_v: 120.0
+    Camera_alpha_c: 0.0
+    Camera_k1: 0.0
+    Camera_k2: 0.0
+    Camera_optical_frame: camera_optical_frame
+    # Ground-truth (public odom). Prefer EstimatorReference robot_init when present;
+    # these are fallbacks only (same internal convention as /lslam Robot_init_*).
+    GT_robot_init_x: 0.0
+    GT_robot_init_y: 0.0
+    GT_robot_init_z: 0.0
+    # Bounded GPS/IMU history for matching EstimatorReference stamps [s].
+    GT_history_duration_sec: 5.0
+    # Max |dt| from reference stamp to nearest GPS sample [s]; unresolved if exceeded.
+    GT_match_max_dt_sec: 0.15
+    # Max poses retained on /ground_truth/path. Values < 1 are clamped to 1
+    # (zero does NOT mean unlimited).
+    GT_path_max_poses: 2000
+    GT_path_frame_id: odom
 #--------------------------------------------------------------------------
 # Dataset component parameters
 /control:
   ros__parameters:
-    Control_plan_path: /home/rodrigo/RD/RESEARCH/RTSLAM/ros_sclam/control_plan.txt
+    # Default overridden at launch to ekf_monoslam_bringup share/control_plan.txt.
+    # Set an absolute path here to force an explicit override.
+    Control_plan_path: ""
     # slam_feedback: false -> webot state feedback,  true ->  slam state feedback
     Slam_feedback: false
+    # A3: SLAM feedback source when Slam_feedback=true ("odometry" | "legacy")
+    Slam_feedback_interface: odometry
+    Odometry_topic: odometry
+    Odometry_expect_frame_id: odom
+    Odometry_expect_child_frame_id: base_link
+    Ekf_enable_service: /EKFslam/enable
     # proportional gains for control
     kp_x: 0.75  #0.5
     kp_y: 0.75  #0.3
@@ -62,6 +95,27 @@
 /lslam:
   ros__parameters:
     Data_origin: webots
+    # A1: "standard" uses remapped sensor_msgs/mavros inputs; "legacy" keeps custom topics
+    Sensor_input_mode: standard
+    # A9: keep A6 default derived_altitude (mavros/GPS-height). Do not synthesize pressure.
+    Altitude_input_mode: derived_altitude
+    Pressure_reference_policy: first_valid
+    Pressure_t0_K: 288.15
+    Pressure_min_Pa: 22632.0
+    Pressure_max_Pa: 108900.0
+    Pressure_z_lever_arm_m: 0.0
+    Pressure_expected_frame_id: ""
+    Pressure_waiting_bound: 2
+    # A8: preserve A6 YAML calibration by default (set camera_info to use ~/camera_info).
+    Calibration_source: yaml
+    Camera_info_image_path: raw
+    Camera_info_waiting_image_bound: 2
+    Camera_info_expected_frame_id: ""
+    Camera_info_qos_reliability: reliable
+    # A2: nav_msgs/Odometry frames (pose in parent, twist in child)
+    Odometry_frame_id: odom
+    Odometry_child_frame_id: base_link
+    Path_max_poses: 100000
     # check x_vel_run_time has the same value for both de Dataset and the localslam component
     x_vel_run_time: 1.0
     Robot_state_size: 13    
@@ -73,7 +127,7 @@
     Speed_update: true
     Visual_update: true
     GPS_update: false
-    Ground_station_range_update: true
+    Ground_station_range_update: false
     # Robot initial conditions
     Robot_init_x: 0.0
     Robot_init_y: 0.0
@@ -135,8 +189,8 @@
     Images_half_patch_size_when_matching: 6
     Images_max_innov_pixels: 50
     # For deleting feats and anchors
-    Visual_delete_Maximun_number_feats_allowed: 200
-    Visual_delete_Maximun_number_anchors_allowed: 500
+    Visual_delete_Maximun_number_feats_allowed: 100
+    Visual_delete_Maximun_number_anchors_allowed: 50
     Visual_delete_minimun_feats_in_state_before_delete: 50    
     Visual_delete_minimun_RatioMatched: 0.3    
     # visual update parameters
@@ -169,36 +223,10 @@
     # Activate/Deactivate statistics 
     Stats: true
 #--------------------------------------------------------------------------
-# Plot component parameters         
+# Plot2 component parameters (ImGui viewer; default for ./launch2.sh)
 /plot2:
   ros__parameters:
-    label_logs: CONFB   
-#--------------------------------------------------------------------------
-# Plot component parameters         
-/plot:
-  ros__parameters:
-    Viewer_width: 1200
-    Viewer_height: 800
-    Cam_distance: 95.0   #45.0  95.0
-    Cam_pos_init_x: -12.0  #5.0 -12.0
-    Cam_pos_init_y: 0.0
-    Cam_pos_init_z: 0.0
-    Cam_zoom_delta: 1.0
-    Cam_move_delta: 0.5
-    Draw_local_slam_trajectory: true
-    Draw_actual_trayectory: true
-    Plot_local_map: true
-    Plot_global_map: true
-    # If PLot_actual_cam_pos = true, plots the camera using the position and rotation provided by the local slam component
-    Robot_type: "quad"
-    Plot_actual_cam_pos: true
-    Robot_cam_pos_x: 0.1
-    Robot_cam_pos_y: 0.0
-    Robot_cam_pos_z: 0.05
-    # z->y->x intrinisic axis rotations for defining the orientation of the camera frame with respect to robot frame
-    Robot_cam_axis_x: 0.785398
-    Robot_cam_axis_y: 0.0
-    Robot_cam_axis_z: 1.5707963268
+    label_logs: CONFB
 #--------------------------------------------------------------------------
 # Global slam component parameters     
 /gslam:

@@ -1,393 +1,244 @@
 #include <cstdio>
-#include "iostream"
-#include "string"
-#include "vpKeyboard.hpp"
+#include <iostream>
+#include <string>
 #include <chrono>
 #include <cstdlib>
 #include <memory>
+#include <thread>
+
+#include "vpKeyboard.hpp"
 #include "rclcpp/rclcpp.hpp"
 #include "interfaces/srv/simple_serv.hpp"
 #include "geometry_msgs/msg/twist.hpp"
+#include "std_srvs/srv/set_bool.hpp"
+#include "std_srvs/srv/trigger.hpp"
 
-using namespace std;
+using namespace std::chrono_literals;
 
+static std::string viewer_mode_from_env()
+{
+  const char * v = std::getenv("EKF_VIEWER");
+  if (v == nullptr || v[0] == '\0') {
+    return "plot2";
+  }
+  const std::string s(v);
+  if (s == "plot2" || s == "rviz2" || s == "none") {
+    return s;
+  }
+  return "plot2";
+}
 
-///---------------------------------
- void printcommands()
- {
-    std::cout << "\n| Dataset commands :\n"             
-                   "|   'q' to quit.\n"
-                   "|   's'-> Start/Stop SLAM          w-> Reset Control-SLAM\n"
-                   "|   'a'-> Start/Stop Control Plan                \n"
-                   "|   '-'-> zoom out '+' ->  zoom in '1'-> x-y view '2' -> x-z view  '3'->y-z view\n"
-                   "|   '8'-> view up '5' ->  view down '4'-> view left '6' -> view right  '7'-> clear plot\n"
-                   "|   '9'-> save screenshot '0' -> log statistics\n"
-                   "|   't'-> TakeOff / landing \n"   
-                   "|         r (forward)                  i (up)         \n"
-                   "| d (left)          g(right)   j(turn L)     l (turn R) \n"
-                   "|         f (back)                     k(down)           \n"
-
-                 << std::endl;
-   
- }   
-
+static void printcommands(const std::string & viewer)
+{
+  std::cout
+    << "\n| Operator commands (integrated experiment):\n"
+    << "|   viewer mode: " << viewer << "\n"
+    << "|   q  quit this operator terminal\n"
+    << "|   s  Start/Stop Local SLAM (/EKFslam/enable; visual on start)\n"
+    << "|   w  Coordinated reset (/EKFslam/reset + control)\n"
+    << "|   a  Start/Stop control plan\n"
+    << "|   t  Takeoff / land (Webots webot_service)\n"
+    << "|   0  Request Local SLAM statistics log\n";
+  if (viewer == "plot2") {
+    std::cout
+      << "| Plot2 (plot_service):\n"
+      << "|   -/+ zoom out/in   1/2/3 select XY / XZ / YZ view\n"
+      << "|   8/5/4/6 pan up/down/left/right (active view)\n"
+      << "|   7 clear plot   9 screenshot (also P in Plot2 window)\n";
+  } else if (viewer == "rviz2") {
+    std::cout
+      << "| RViz2: use the RViz window for navigation (orbit/pan/zoom).\n"
+      << "| Plot2 keys (-/+ 1-9) are unavailable in this mode.\n"
+      << "| GT_topic / image overlays are not shown in the shipped RViz layout.\n";
+  } else {
+    std::cout
+      << "| No viewer: Plot2 keys (-/+ 1-9) are unavailable.\n";
+  }
+  std::cout
+    << "| Manual flight (cmd_vel):\n"
+    << "|         r forward                 i up\n"
+    << "|   d left       g right    j turnL   l turnR\n"
+    << "|         f back                    k down\n"
+    << "|   space stop\n"
+    << "| Note: Global SLAM is not in this launch; globalslam_run_service\n"
+    << "|       calls on reset are best-effort and may be unavailable.\n"
+    << std::endl;
+}
 
 int main(int argc, char ** argv)
 {
-  (void) argc;
-  (void) argv;
-
   vpKeyboard keyboard;
   int k = 0;
 
   rclcpp::init(argc, argv);
+  auto node = rclcpp::Node::make_shared("keyboard_dataset");
 
-  std::shared_ptr<rclcpp::Node> node = rclcpp::Node::make_shared("keyboard_dataset");
-  
-  // create client services
+  const std::string viewer = viewer_mode_from_env();
+  const bool plot2_keys = (viewer == "plot2");
 
-  rclcpp::Client<interfaces::srv::SimpleServ>::SharedPtr client_dataset =
-    node->create_client<interfaces::srv::SimpleServ>("dataset_service");
-
-  rclcpp::Client<interfaces::srv::SimpleServ>::SharedPtr client_ekf_run_ =
-    node->create_client<interfaces::srv::SimpleServ>("ekf_run_service");
-  
-  rclcpp::Client<interfaces::srv::SimpleServ>::SharedPtr client_globalslam_run_ =
+  auto client_ekf = node->create_client<interfaces::srv::SimpleServ>("ekf_run_service");
+  auto client_globalslam =
     node->create_client<interfaces::srv::SimpleServ>("globalslam_run_service");
-
-  rclcpp::Client<interfaces::srv::SimpleServ>::SharedPtr client_control_run_ =
+  auto client_control =
     node->create_client<interfaces::srv::SimpleServ>("control_run_service");
+  auto client_webot =
+    node->create_client<interfaces::srv::SimpleServ>("webot_service");
+  auto client_plot =
+    node->create_client<interfaces::srv::SimpleServ>("plot_service");
+  auto client_enable =
+    node->create_client<std_srvs::srv::SetBool>("/EKFslam/enable");
+  auto client_reset =
+    node->create_client<std_srvs::srv::Trigger>("/EKFslam/reset");
 
-  rclcpp::Client<interfaces::srv::SimpleServ>::SharedPtr client_webot_service_ =
-    node->create_client<interfaces::srv::SimpleServ>("webot_service");  
-  // --------------
+  auto pub_cmd_vel =
+    node->create_publisher<geometry_msgs::msg::Twist>("cmd_vel", 10);
 
-  // create publishers ----------------------------
+  bool takeoff = false;
+  bool slam_running = false;
+  printcommands(viewer);
 
-  rclcpp::Publisher<geometry_msgs::msg::Twist>::SharedPtr pub_cmd_vel_ = node->create_publisher<geometry_msgs::msg::Twist>("cmd_vel",10);
-  
-  //-------------------------------------
-
-/*
-
- auto request = std::make_shared<interfaces::srv::SimpleServ::Request>();
-           request->cmd = 1;
-
- while (!client_dataset->wait_for_service(1s)) {
-    if (!rclcpp::ok()) {
-      RCLCPP_ERROR(rclcpp::get_logger("rclcpp"), "Interrupted while waiting for the service. Exiting.");
-      return 0;
+  auto send_simple = [&](
+    const rclcpp::Client<interfaces::srv::SimpleServ>::SharedPtr & client,
+    int64_t cmd)
+  {
+    if (!client->service_is_ready()) {
+      return;
     }
-    RCLCPP_INFO(rclcpp::get_logger("rclcpp"), "service not available, waiting again...");
-  } 
-          
+    auto req = std::make_shared<interfaces::srv::SimpleServ::Request>();
+    req->cmd = cmd;
+    (void)client->async_send_request(req);
+  };
 
-  auto result = client_dataset->async_send_request(request);
-  // Wait for the result.
-  if (rclcpp::spin_until_future_complete(node, result) ==
-    rclcpp::FutureReturnCode::SUCCESS)
-  { 
-    if (result.get()->response == true)
-    {
-      cout << "keyboard->  Dataset component response: Ok" << endl;
+  while (rclcpp::ok() && k != 'q') {
+    k = 0;
+    if (keyboard.kbhit()) {
+      k = keyboard.getchar();
+
+      if (k == 's') {
+        if (!slam_running) {
+          slam_running = true;
+          // Single enable path: standard SetBool (not also legacy 'r').
+          if (client_enable->service_is_ready()) {
+            auto req = std::make_shared<std_srvs::srv::SetBool::Request>();
+            req->data = true;
+            (void)client_enable->async_send_request(req);
+          }
+          // Visual update is a separate SimpleServ command ('v').
+          send_simple(client_ekf, 'v');
+          std::cout << "operator-> SLAM enable requested (/EKFslam/enable + visual)\n";
+        } else {
+          slam_running = false;
+          if (client_enable->service_is_ready()) {
+            auto req = std::make_shared<std_srvs::srv::SetBool::Request>();
+            req->data = false;
+            (void)client_enable->async_send_request(req);
+          }
+          std::cout << "operator-> SLAM disable requested (/EKFslam/enable)\n";
+        }
+      }
+
+      if (k == 'a') {
+        send_simple(client_control, 'r');
+        std::cout << "operator-> control plan toggle requested\n";
+      }
+
+      if (k == 'w') {
+        // Single reset path: standard Trigger (not also legacy 'i' on EKF).
+        if (client_reset->service_is_ready()) {
+          auto req = std::make_shared<std_srvs::srv::Trigger::Request>();
+          (void)client_reset->async_send_request(req);
+        }
+        send_simple(client_control, 'i');
+        send_simple(client_globalslam, 'i');  // best-effort; may be absent
+        if (plot2_keys) {
+          send_simple(client_plot, 'c');
+        }
+        slam_running = false;
+        std::cout << "operator-> coordinated reset requested\n";
+      }
+
+      if (k == '0') {
+        send_simple(client_ekf, '0');
+        send_simple(client_globalslam, '0');
+      }
+
+      if (plot2_keys &&
+        (k == 45 || k == 43 || k == '1' || k == '2' || k == '3' ||
+          k == '8' || k == '5' || k == '4' || k == '6' || k == '7' || k == '9'))
+      {
+        send_simple(client_plot, k);
+      } else if (!plot2_keys &&
+        (k == 45 || k == 43 || k == '1' || k == '2' || k == '3' ||
+          k == '8' || k == '5' || k == '4' || k == '6' || k == '7' || k == '9'))
+      {
+        std::cout << "operator-> Plot2 key ignored (viewer=" << viewer << ")\n";
+      }
+
+      if (k == ' ') {
+        geometry_msgs::msg::Twist twist;
+        pub_cmd_vel->publish(twist);
+        std::cout << "stop\n";
+      }
+      if (k == 'i') {
+        geometry_msgs::msg::Twist twist;
+        twist.linear.z = 0.25;
+        pub_cmd_vel->publish(twist);
+      }
+      if (k == 'k') {
+        geometry_msgs::msg::Twist twist;
+        twist.linear.z = -0.25;
+        pub_cmd_vel->publish(twist);
+      }
+      if (k == 'l') {
+        geometry_msgs::msg::Twist twist;
+        twist.angular.z = -0.5;
+        pub_cmd_vel->publish(twist);
+      }
+      if (k == 'j') {
+        geometry_msgs::msg::Twist twist;
+        twist.angular.z = 0.5;
+        pub_cmd_vel->publish(twist);
+      }
+      if (k == 'r') {
+        geometry_msgs::msg::Twist twist;
+        twist.linear.x = 0.5;
+        pub_cmd_vel->publish(twist);
+      }
+      if (k == 'f') {
+        geometry_msgs::msg::Twist twist;
+        twist.linear.x = -0.5;
+        pub_cmd_vel->publish(twist);
+      }
+      if (k == 'd') {
+        geometry_msgs::msg::Twist twist;
+        twist.linear.y = 0.5;
+        pub_cmd_vel->publish(twist);
+      }
+      if (k == 'g') {
+        geometry_msgs::msg::Twist twist;
+        twist.linear.y = -0.5;
+        pub_cmd_vel->publish(twist);
+      }
+
+      if (k == 't') {
+        if (!takeoff) {
+          send_simple(client_webot, 't');
+          takeoff = true;
+          std::cout << "operator-> takeoff\n";
+        } else {
+          send_simple(client_webot, 'l');
+          takeoff = false;
+          std::cout << "operator-> land\n";
+        }
+      }
+
+      std::this_thread::sleep_for(10ms);
+      printcommands(viewer);
     }
-    //RCLCPP_INFO(rclcpp::get_logger("rclcpp"), "Response: %ld", result.get()->response);
-  } else {
-    RCLCPP_ERROR(rclcpp::get_logger("rclcpp"), "keyboard->  Failed to call service dataset_service");
+    rclcpp::spin_some(node);
+    std::this_thread::sleep_for(10ms);
   }
 
-//----------------------------------------------------------------
-//  check for local slam component
-rclcpp::Client<interfaces::srv::SimpleServ>::SharedPtr client_localslam =
-    node->create_client<interfaces::srv::SimpleServ>("ekf_run_service");
-
-auto request_2 = std::make_shared<interfaces::srv::SimpleServ::Request>();
-              request_2->cmd = 'r';           
-auto result_2 = client_localslam->async_send_request(request_2);
-
-if (rclcpp::spin_until_future_complete(node, result_2) ==
-                    rclcpp::FutureReturnCode::SUCCESS)
-                  { 
-                    if (result_2.get()->response == true) cout << "keyboard->  Local slam component response: Ok" << endl;
-                    //RCLCPP_INFO(rclcpp::get_logger("rclcpp"), "Response: %ld", result.get()->response);
-                  } else {
-                    RCLCPP_ERROR(rclcpp::get_logger("rclcpp"), "keyboard->  Failed to call service ekf_run_service");
-                  } 
-//-----------------------------------------------------------------
-//  check for plot component
-*/
-rclcpp::Client<interfaces::srv::SimpleServ>::SharedPtr client_plot =
-    node->create_client<interfaces::srv::SimpleServ>("plot_service");
-
-/*
-auto request_3 = std::make_shared<interfaces::srv::SimpleServ::Request>();
-              request_3->cmd = 'r';           
-auto result_3 = client_plot->async_send_request(request_3);
-
-if (rclcpp::spin_until_future_complete(node, result_3) ==
-                    rclcpp::FutureReturnCode::SUCCESS)
-                  { 
-                    if (result_3.get()->response == true) cout << "keyboard->  Plot component response: Ok" << endl;
-                    //RCLCPP_INFO(rclcpp::get_logger("rclcpp"), "Response: %ld", result.get()->response);
-                  } else {
-                    RCLCPP_ERROR(rclcpp::get_logger("rclcpp"), "keyboard->  Failed to call plot_service");
-                  } 
-*/
-bool to = false;
-
-printcommands();
-bool start_slam_flag = false;
-
-while (k != 'q') 
-      {
- 
-         k = '0'; // If no key is hit, we send a non-assigned key
-         if (keyboard.kbhit()) 
-         {
-           k = keyboard.getchar();
-          
-           
-           if (k == 's' )
-           {  
-              if(start_slam_flag == false)
-              { 
-                start_slam_flag = true;
-                // Start/Stop LocalSLAM;              
-                auto request = std::make_shared<interfaces::srv::SimpleServ::Request>();
-                request->cmd = 'r';              
-                auto result = client_ekf_run_->async_send_request(request);
-                request->cmd = 'u';              
-                result = client_ekf_run_->async_send_request(request); 
-              }
-              else
-              {
-                auto request = std::make_shared<interfaces::srv::SimpleServ::Request>();
-                request->cmd = 's';              
-                auto result = client_ekf_run_->async_send_request(request);
-              }
-
-            }
-            if (k == 'a' )
-            { 
-              // Start/Stop Control plan
-              auto request = std::make_shared<interfaces::srv::SimpleServ::Request>();
-              request->cmd = 'r';
-              auto result = client_control_run_->async_send_request(request);
-              
-            }
-            if (k == 'w' )
-            { 
-                // Restart LocalSLAM, Gmap, Cloop, Control;              
-              auto request = std::make_shared<interfaces::srv::SimpleServ::Request>();
-              request->cmd = 'i';
-              auto result = client_ekf_run_->async_send_request(request); 
-              result = client_globalslam_run_->async_send_request(request);
-              result = client_control_run_->async_send_request(request);
-              request->cmd = 'c';
-              result = client_plot->async_send_request(request); 
-
-            }
-            
-            if ( k == '0')
-            {
-              // log statistics
-              auto request = std::make_shared<interfaces::srv::SimpleServ::Request>();
-              request->cmd = k;
-              auto result = client_ekf_run_->async_send_request(request); 
-              result = client_globalslam_run_->async_send_request(request); 
-
-            }
-            if ( k == 45)
-            {
-              // '-' ->  plot zoom out
-              auto request = std::make_shared<interfaces::srv::SimpleServ::Request>();
-              request->cmd = k;
-              auto result = client_plot->async_send_request(request); 
-            }
-            if ( k == 43)
-            {
-              // '+' ->  plot zoom in
-              auto request = std::make_shared<interfaces::srv::SimpleServ::Request>();
-              request->cmd = k;
-              auto result = client_plot->async_send_request(request);
-            }
-            if ( k == '1')
-            {
-              // '1' ->  x-y view 
-              auto request = std::make_shared<interfaces::srv::SimpleServ::Request>();
-              request->cmd = k;
-              auto result = client_plot->async_send_request(request);
-            }
-            if ( k == '2')
-            {
-              // '2' ->  x-z view
-              auto request = std::make_shared<interfaces::srv::SimpleServ::Request>();
-              request->cmd = k;
-              auto result = client_plot->async_send_request(request); 
-            }
-            if ( k == '3')
-            {
-              // '3' ->  y-z view 
-              auto request = std::make_shared<interfaces::srv::SimpleServ::Request>();
-              request->cmd = k;
-              auto result = client_plot->async_send_request(request); 
-            }
-            if ( k == '8')
-            {
-              // '8' ->  cam up 
-              auto request = std::make_shared<interfaces::srv::SimpleServ::Request>();
-              request->cmd = k;
-              auto result = client_plot->async_send_request(request); 
-            }
-            if ( k == '4')
-            {
-              // '4' ->  cam left 
-              auto request = std::make_shared<interfaces::srv::SimpleServ::Request>();
-              request->cmd = k;
-              auto result = client_plot->async_send_request(request); 
-            }
-            if ( k == '6')
-            {
-              // '6' ->  cam right 
-              auto request = std::make_shared<interfaces::srv::SimpleServ::Request>();
-              request->cmd = k;
-              auto result = client_plot->async_send_request(request); 
-            }
-            if ( k == '5')
-            {
-              // '5' ->  cam down 
-              auto request = std::make_shared<interfaces::srv::SimpleServ::Request>();
-              request->cmd = k;
-              auto result = client_plot->async_send_request(request); 
-            }
-            if ( k == '7')
-            {
-              // 'c' ->  clear plot
-              auto request = std::make_shared<interfaces::srv::SimpleServ::Request>();
-              request->cmd = k;
-              auto result = client_plot->async_send_request(request); 
-            }
-            if (k == '9')
-            {
-              auto request = std::make_shared<interfaces::srv::SimpleServ::Request>();
-              request->cmd = k;
-              auto result = client_plot->async_send_request(request); 
-            }
-            
-            //cout << k << endl;
-            if( k == ' ')
-            {
-              // Stop
-              auto twist_msg = geometry_msgs::msg::Twist();
-              twist_msg.linear.x = 0.0;    // Linear velocity along x-axis
-              twist_msg.linear.y = 0.0;
-              twist_msg.linear.z = 0.0;
-              twist_msg.angular.z = 0.0;      
-              pub_cmd_vel_->publish(twist_msg);             
-              cout << "stop" << endl;             
-              
-            } 
-            if( k == 'i')
-            {
-              // Up
-              //auto twist_msg = std::make_shared<geometry_msgs::msg::Twist>();
-              auto twist_msg = geometry_msgs::msg::Twist();
-              twist_msg.linear.z = 0.25;    // Linear velocity along x-axis
-              pub_cmd_vel_->publish(twist_msg);
-              
-            } 
-        
-            if( k == 'k')
-            {
-              // Down              
-               auto twist_msg = geometry_msgs::msg::Twist();
-              twist_msg.linear.z = -0.25;    // Linear velocity along x-axis
-              pub_cmd_vel_->publish(twist_msg);          
-              
-            }
-        
-            if( k == 'l')
-            {
-              // turn Right
-              auto twist_msg = geometry_msgs::msg::Twist();
-              twist_msg.angular.z =  -0.5;    // Linear velocity along x-axis
-              pub_cmd_vel_->publish(twist_msg);  
-              
-            }
-        
-            if( k == 'j')
-            {
-              // turn Left
-              auto twist_msg = geometry_msgs::msg::Twist();
-              twist_msg.angular.z =  0.5;    // Linear velocity along x-axis
-              pub_cmd_vel_->publish(twist_msg);  
-              
-            }
-        
-            if( k == 'r')
-            {
-              // Forward
-              auto twist_msg = geometry_msgs::msg::Twist();
-              twist_msg.linear.x =  0.5;    // Linear velocity along x-axis
-              pub_cmd_vel_->publish(twist_msg);  
-              
-            }
-        
-            if( k == 'f')
-            {
-              // Backward
-              auto twist_msg = geometry_msgs::msg::Twist();
-              twist_msg.linear.x =  -0.5;    // Linear velocity along x-axis
-              pub_cmd_vel_->publish(twist_msg);  
-              
-            }
-        
-            if( k == 'd')
-            {
-              //  left
-              auto twist_msg = geometry_msgs::msg::Twist();
-              twist_msg.linear.y =  0.5;    // Linear velocity along x-axis
-              pub_cmd_vel_->publish(twist_msg);  
-              
-            }
-        
-            if( k == 'g')
-            {
-              //  right
-              auto twist_msg = geometry_msgs::msg::Twist();
-              twist_msg.linear.y =  -0.5;    // Linear velocity along x-axis
-              pub_cmd_vel_->publish(twist_msg);  
-              
-            }
-            if (k == 't')
-            {
-              auto request = std::make_shared<interfaces::srv::SimpleServ::Request>();
-              if(to == false)
-              {
-                request->cmd = 't';
-                to = true;
-              }
-              else{
-                request->cmd = 'l';
-                to = false;
-              }
-              auto result = client_webot_service_->async_send_request(request);
-            }
-            
-            std::this_thread::sleep_for(std::chrono::milliseconds(10)); // sleep a short period of time to save proccesor use
-            
-            
-
-
-            printcommands();
-            
-
-         }
-         //running = handleKeyboardInput(drone, k,ekf,locks,par,gmap,cloop,control,stop_control);
-         
-
-         
-       }
-
+  rclcpp::shutdown();
   return 0;
 }

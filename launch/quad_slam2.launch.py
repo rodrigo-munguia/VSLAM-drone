@@ -1,93 +1,82 @@
 # Copyright 2019 Open Source Robotics Foundation, Inc.
 #
-# Licensed under the Apache License, Version 2.0 (the "License");
-# you may not use this file except in compliance with the License.
-# You may obtain a copy of the License at
-#
-#     http://www.apache.org/licenses/LICENSE-2.0
-#
-# Unless required by applicable law or agreed to in writing, software
-# distributed under the License is distributed on an "AS IS" BASIS,
-# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-# See the License for the specific language governing permissions and
-# limitations under the License.
+# Prefer launch_a1.sh + ekf_monoslam_bringup for A1 (install_a1 + share paths).
+# This file remains for repo-root workflows; it resolves bringup share when
+# available and otherwise falls back to cwd config/.
 
-"""Launch a talker and a listener in a component container."""
 import os
-from ament_index_python.packages import get_package_share_directory
+
 import launch
 import yaml
 from launch_ros.actions import ComposableNodeContainer
 from launch_ros.descriptions import ComposableNode
-from launch_ros.actions import Node
-from launch.substitutions import LaunchConfiguration
-from launch import LaunchDescription
+
+
+def _load_config():
+    try:
+        from ament_index_python.packages import get_package_share_directory
+        share = get_package_share_directory('ekf_monoslam_bringup')
+        config_file = os.path.join(share, 'config', 'quad_params.yaml')
+        default_plan = os.path.join(share, 'control_plan.txt')
+        return config_file, default_plan
+    except Exception:
+        config_file = os.path.join(os.getcwd(), 'config', 'quad_params.yaml')
+        default_plan = os.path.join(os.getcwd(), 'control_plan.txt')
+        return config_file, default_plan
 
 
 def generate_launch_description():
-    """Generate launch description with multiple components."""
-    
-    configFile = os.path.join(
-        os.getcwd(),         
-        'config',
-        'quad_params.yaml'
-    )
-    #configFile = '/home/rodrigo/Dropbox/RESEARCH/RTSLAM/ros_ws/config/params.yaml'
-    
-    # Load the parameters specific to your ComposableNode    
-        
-    with open(configFile, 'r') as file:
-        lslamParams = yaml.safe_load(file)['/lslam']['ros__parameters']
-    
-    with open(configFile, 'r') as file:
-        plotParams = yaml.safe_load(file)['/plot']['ros__parameters']
-        
-    with open(configFile, 'r') as file:
-        plotParams = yaml.safe_load(file)['/plot2']['ros__parameters']    
-        
-    with open(configFile, 'r') as file:
-        webotbridgeParams = yaml.safe_load(file)['/webotbridge']['ros__parameters']
-        
-    with open(configFile, 'r') as file:
-        controlParams = yaml.safe_load(file)['/control']['ros__parameters']          
-    
+    config_file, default_plan = _load_config()
+
+    with open(config_file, 'r') as file:
+        raw = yaml.safe_load(file)
+
+    lslam_params = dict(raw['/lslam']['ros__parameters'])
+    plot_params = dict(raw['/plot2']['ros__parameters'])
+    webotbridge_params = dict(raw['/webotbridge']['ros__parameters'])
+    control_params = dict(raw['/control']['ros__parameters'])
+
+    plan_param = control_params.get('Control_plan_path', '')
+    if (not plan_param) or (not os.path.isabs(str(plan_param))) or (
+            not os.path.isfile(plan_param)):
+        control_params['Control_plan_path'] = default_plan
+
+    lslam_remaps = [
+        ('~/image', '/image'),
+        ('~/imu', '/imu_out'),
+        ('~/body_velocity', '/body_velocity'),
+        ('~/downward_range', '/downward_range'),
+        ('~/altitude', '/altitude'),
+    ]
+
     container = ComposableNodeContainer(
             name='my_container',
             namespace='',
             package='rclcpp_components',
-            #executable='component_container_mt',
             executable='component_container',
-            composable_node_descriptions=[                                                    
+            composable_node_descriptions=[
                  ComposableNode(
                     package='localslam',
                     plugin='localslam::EKFslam',
                     name='EKFslam',
-                    parameters= [lslamParams]),  
-                #ComposableNode(
-                #    package='plot',
-                #    plugin='plot::PLOTscene',
-                #    name='PLOTscene',
-                #    parameters= [plotParams]),
+                    parameters=[lslam_params],
+                    remappings=lslam_remaps),
                 ComposableNode(
                     package='plot2',
                     plugin='plot2::PLOTscene2',
                     name='PLOTscene2',
-                    parameters= [plotParams]),  
+                    parameters=[plot_params]),
                 ComposableNode(
                     package='webotbridge',
                     plugin='webotbridge::WEBOTb',
                     name='WEBOTb',
-                    parameters= [webotbridgeParams],              
-                   ),
+                    parameters=[webotbridge_params]),
                 ComposableNode(
                     package='control',
                     plugin='control::ControlQuad',
                     name='ControlQuad',
-                    parameters= [controlParams],              
-                   )                                                                
+                    parameters=[control_params]),
             ],
             output='screen',
     )
     return launch.LaunchDescription([container])
-
-

@@ -7,7 +7,7 @@
 #include "localslam_types.hpp"
 #include "ekf_types.hpp"
 #include <opencv2/opencv.hpp>
-#include "../../globalslam/src/globalslam_types.hpp"
+#include "../../common/keyframe_types.hpp"
 #include "../../common/Vision/vision.hpp"
 
 
@@ -82,7 +82,8 @@ class EKF
         void Attitude_euler_Update(ATT &att);
         void Speed_Update2(SPD &spd);
         void Speed_Update_nav_euler(SPD &spd);
-        void Altitude_update(ALT &alt);
+        /** Returns true if altitude home was newly latched on this call. */
+        bool Altitude_update(ALT &alt);
         void Rangetobase_update(RANGETOBASE &rangetobase);
         void Visual_update_e(FRAME *frame);
         void Visual_update_e_init_feat_wr(FRAME *frame);
@@ -108,12 +109,14 @@ class EKF
         
         void Store_info(double time);
 
-        double yaw_at_home;
-        
+        double yaw_at_home{0.0};
 
+        /** Instance-owned altitude home (replaces process-static latch). */
+        bool alt_home_ready_{false};
+        double alt_at_home_{0.0};
+        long int alt_home_time_ms_{0};
+        bool alt_home_latched_event_{false};
 
-        
-    
     public:
         
         STORE store;
@@ -121,14 +124,37 @@ class EKF
         void system_init(DATA &dat);
         void ekf_step(DATA &dat);       
         bool get_ekf_initialized_state();
-        void set_ekf_initialized_statet(bool state); 
+        void set_ekf_initialized_statet(bool state);
+        double get_yaw_at_home() const { return yaw_at_home; }
+        bool altitude_home_ready() const { return alt_home_ready_; }
+        double altitude_home_internal() const { return alt_at_home_; }
+        long int altitude_home_time_ms() const { return alt_home_time_ms_; }
+        /** True once after a new altitude-home latch; clears the event. */
+        bool consume_altitude_home_latched_event();
+        void reset_altitude_home(); 
         LOCALSLAM_DATA get_lslam_data();
         bool get_KeyFrame(KEYFRAME &KF);
         bool get_KeyFrameCL(KEYFRAME &KF);
         bool get_RobotState(arma::vec::fixed<13> &x_r,double &radius_uncertainty);
+        /** Consistent robot-state + 13x13 P snapshot (clears NewRobotState_available). */
+        bool get_RobotStateSnapshot(
+          arma::vec::fixed<13> & x_r,
+          arma::mat::fixed<13, 13> & P_r,
+          double & radius_uncertainty);
         void Update_pos_with_delta(arma::vec::fixed<3> delta_pos, string type);
         void SetCompute_Pc_flag(bool state);
         void set_ekf_visual_update(bool state);
+
+        /** A8: apply intrinsics into PAR + cam_parameters (pointer into PAR.distortions). */
+        void set_camera_intrinsics(
+          int img_cols,
+          int img_rows,
+          double fc_u,
+          double fc_v,
+          double cc_u,
+          double cc_v,
+          double alpha_c,
+          const std::vector<double> & distortions);
 
        
 

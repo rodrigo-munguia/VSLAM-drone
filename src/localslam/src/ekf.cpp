@@ -46,6 +46,7 @@ void EKF::init_euler_system_statet(DATA &dat)
 
   yaw_at_home = dat.att.yaw;
   AngleWrap(yaw_at_home);
+  reset_altitude_home();
 
   double axis_x = PAR.Robot_init_roll ;
   double axis_y = PAR.Robot_init_pitch ;
@@ -123,6 +124,7 @@ void EKF::init_quat_system_state(DATA &dat)
 
   yaw_at_home = dat.att.yaw;
   AngleWrap(yaw_at_home);
+  reset_altitude_home();
 
   double axis_x = PAR.Robot_init_roll ;
   double axis_y = PAR.Robot_init_pitch ;
@@ -539,27 +541,71 @@ bool EKF::get_ekf_initialized_state()
 void EKF::set_ekf_initialized_statet(bool state)
 {
     initialized = state;
+    // A5/A4: on re-init request, drop any pending pre-reset snapshot so the
+    // worker cannot publish stale robot/odom/path after clearing outputs.
+    if (state == false) {
+      NewRobotState_available = false;
+      NewKF_available = false;
+      New_KF_cl = false;
+      // Clear altitude home so a post-reset first sample re-latches (instance
+      // state; replaces the former process-static latch that survived reset).
+      reset_altitude_home();
+    }
 }
 void EKF::set_ekf_visual_update(bool state)
 {
     PAR.Visual_update = state;
+}
+
+void EKF::set_camera_intrinsics(
+  int img_cols,
+  int img_rows,
+  double fc_u,
+  double fc_v,
+  double cc_u,
+  double cc_v,
+  double alpha_c,
+  const std::vector<double> & distortions)
+{
+  PAR.Mono_cam_img_cols = img_cols;
+  PAR.Mono_cam_img_rows = img_rows;
+  PAR.Mono_cam_fc_u = fc_u;
+  PAR.Mono_cam_fc_v = fc_v;
+  PAR.Mono_cam_cc_u = cc_u;
+  PAR.Mono_cam_cc_v = cc_v;
+  PAR.Mono_cam_alpha_c = alpha_c;
+  PAR.Mono_cam_distortions = distortions;
+  if (PAR.Mono_cam_distortions.size() < 5) {
+    PAR.Mono_cam_distortions.resize(5, 0.0);
+  }
+  cam_parameters.distortions = &PAR.Mono_cam_distortions[0];
+  cam_parameters.fc[0] = PAR.Mono_cam_fc_u;
+  cam_parameters.fc[1] = PAR.Mono_cam_fc_v;
+  cam_parameters.cc[0] = PAR.Mono_cam_cc_u;
+  cam_parameters.cc[1] = PAR.Mono_cam_cc_v;
+  cam_parameters.alpha_c = PAR.Mono_cam_alpha_c;
 } 
 //-----------------------------------------
 // Rodrigo M. 2022
 bool EKF::get_RobotState(arma::vec::fixed<13> &x_r,double &radius_uncertainty)
 {
-  if(NewRobotState_available == true)
-  {
-    x_r = x.subvec(0,12);
+  arma::mat::fixed<13, 13> P_unused;
+  return get_RobotStateSnapshot(x_r, P_unused, radius_uncertainty);
+}
+
+bool EKF::get_RobotStateSnapshot(
+  arma::vec::fixed<13> & x_r,
+  arma::mat::fixed<13, 13> & P_r,
+  double & radius_uncertainty)
+{
+  if (NewRobotState_available == true) {
+    x_r = x.subvec(0, 12);
+    P_r = P(arma::span(0, 12), arma::span(0, 12));
     radius_uncertainty = Cl_radius_uncertainty;
     NewRobotState_available = false;
     return true;
   }
-  else
-  {
-    return false;
-  }
-
+  return false;
 }
 //-----------------------------------------
 // Rodrigo M. 2022
@@ -584,12 +630,14 @@ LOCALSLAM_DATA EKF::get_lslam_data()
   slam_state.Rn2r = Rn2r;
   slam_state.r_N = x.subvec(7,9); 
 
-  // get map points
+  // Clear output accumulators only (LOCALSLAM_DATA). Does not modify live
+  // FeatsDATA / AnchorsDATA in the estimator.
   slam_state.map_state.clear();
+  slam_state.map_anchors.clear();
   slam_state.matched_img_feats.clear();
   slam_state.unmatched_img_feats.clear();
   slam_state.unmatched_img_anchors.clear();
-  slam_state.matched_img_anchors.clear();  
+  slam_state.matched_img_anchors.clear();
   
   for(int i = 0; i < FeatsDATA.size(); i++)
   {

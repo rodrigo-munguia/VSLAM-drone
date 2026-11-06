@@ -1,0 +1,11 @@
+[INFO] [launch]: All log files can be found below /home/rmung/.ros/log/2026-11-05-15-51-20-343689-PF5TDX8Y-133592
+[INFO] [launch]: Default logging verbosity is set to INFO
+[INFO] [component_container-1]: process started with pid [133623]
+[component_container-1] [INFO] [1793915480.639088218] [a5b_ctl_133592]: Load Library: /home/rmung/DEV/projects/EKF-MonoSLAM-Range-To-Base/install_a1/control/lib/libcontrol_component.so
+[component_container-1] [INFO] [1793915480.679809578] [a5b_ctl_133592]: Found class: rclcpp_components::NodeFactoryTemplate<control::ControlQuad>
+[component_container-1] [INFO] [1793915480.679856669] [a5b_ctl_133592]: Instantiate class: rclcpp_components::NodeFactoryTemplate<control::ControlQuad>
+[component_container-1] [INFO] [1793915480.686421889] [control_quad]: SLAM pose from Odometry '/EKFslam/odometry' (expect frames odom / base_link); radius_uncertainty from Robotstate_topic (A5b)
+[component_container-1] [INFO] [1793915480.688300693] [control_quad]: Control Slam_feedback=true Slam_feedback_interface=odometry odom_topic=/EKFslam/odometry
+[component_container-1] -> Control thread running... 
+[INFO] [launch_ros.actions.load_composable_nodes]: Loaded node '/control_quad' in container '/a5b_ctl_133592'
+[component_container-1] control-> request received: Re-init control plan

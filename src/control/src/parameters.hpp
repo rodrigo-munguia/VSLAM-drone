@@ -20,6 +20,12 @@ struct parameters
     string Control_plan_path;
     
     bool Slam_feedback;
+    // A3: when Slam_feedback=true, select "legacy" (Robotstate) or "odometry".
+    string Slam_feedback_interface;
+    string Odometry_topic;
+    string Odometry_expect_frame_id;
+    string Odometry_expect_child_frame_id;
+    string Ekf_enable_service;
     // proportional gains for control
     double kp_x;
     double kp_y;

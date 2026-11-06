@@ -9,6 +9,23 @@ void EKFslam::setParameters()
    //  Declare node parameters (and default values)
    this->declare_parameter<std::string>("Data_origin", "dataset");
    this->declare_parameter<double>("x_vel_run_time",1.0);
+   this->declare_parameter<std::string>("Sensor_input_mode", "legacy");
+   this->declare_parameter<std::string>("Altitude_input_mode", "derived_altitude");
+   this->declare_parameter<std::string>("Odometry_frame_id", "odom");
+   this->declare_parameter<std::string>("Odometry_child_frame_id", "base_link");
+   this->declare_parameter<int>("Path_max_poses", 2000);
+   this->declare_parameter<std::string>("Calibration_source", "yaml");
+   this->declare_parameter<std::string>("Camera_info_image_path", "raw");
+   this->declare_parameter<int>("Camera_info_waiting_image_bound", 2);
+   this->declare_parameter<std::string>("Camera_info_expected_frame_id", "");
+   this->declare_parameter<std::string>("Camera_info_qos_reliability", "reliable");
+   this->declare_parameter<std::string>("Pressure_reference_policy", "first_valid");
+   this->declare_parameter<double>("Pressure_t0_K", 288.15);
+   this->declare_parameter<double>("Pressure_min_Pa", 22632.0);
+   this->declare_parameter<double>("Pressure_max_Pa", 108900.0);
+   this->declare_parameter<double>("Pressure_z_lever_arm_m", 0.0);
+   this->declare_parameter<std::string>("Pressure_expected_frame_id", "");
+   this->declare_parameter<int>("Pressure_waiting_bound", 2);
    this->declare_parameter<int>("Robot_state_size",13);
    this->declare_parameter<double>("Mono_cam_frame_period",0.0333);
    this->declare_parameter<std::string>("Prediction_model","noise_driven");
@@ -104,6 +121,23 @@ void EKFslam::setParameters()
    // Set parameter struct
    this->get_parameter("Data_origin", PAR.Data_origin);
    this->get_parameter("x_vel_run_time",PAR.x_vel_run_time);
+   this->get_parameter("Sensor_input_mode", PAR.Sensor_input_mode);
+   this->get_parameter("Altitude_input_mode", PAR.Altitude_input_mode);
+   this->get_parameter("Odometry_frame_id", PAR.Odometry_frame_id);
+   this->get_parameter("Odometry_child_frame_id", PAR.Odometry_child_frame_id);
+   this->get_parameter("Path_max_poses", PAR.Path_max_poses);
+   this->get_parameter("Calibration_source", PAR.Calibration_source);
+   this->get_parameter("Camera_info_image_path", PAR.Camera_info_image_path);
+   this->get_parameter("Camera_info_waiting_image_bound", PAR.Camera_info_waiting_image_bound);
+   this->get_parameter("Camera_info_expected_frame_id", PAR.Camera_info_expected_frame_id);
+   this->get_parameter("Camera_info_qos_reliability", PAR.Camera_info_qos_reliability);
+   this->get_parameter("Pressure_reference_policy", PAR.Pressure_reference_policy);
+   this->get_parameter("Pressure_t0_K", PAR.Pressure_t0_K);
+   this->get_parameter("Pressure_min_Pa", PAR.Pressure_min_Pa);
+   this->get_parameter("Pressure_max_Pa", PAR.Pressure_max_Pa);
+   this->get_parameter("Pressure_z_lever_arm_m", PAR.Pressure_z_lever_arm_m);
+   this->get_parameter("Pressure_expected_frame_id", PAR.Pressure_expected_frame_id);
+   this->get_parameter("Pressure_waiting_bound", PAR.Pressure_waiting_bound);
    this->get_parameter("Robot_state_size",PAR.Robot_state_size);
    this->get_parameter("Mono_cam_frame_period",PAR.Mono_cam_frame_period);
    this->get_parameter("Prediction_model",PAR.Prediction_model);

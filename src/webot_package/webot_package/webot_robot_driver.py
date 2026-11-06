@@ -36,9 +36,26 @@ K_Y_VELOCITY_I = 0.01
 LIFT_HEIGHT = 1
 
 
+def _resolve_log_path(filename):
+    """Write driver CSVs under a writable dir (webots-controller cwd may be /)."""
+    if os.path.isabs(filename):
+        path = filename
+    else:
+        base = os.environ.get(
+            'WEBOT_DRIVER_LOG_DIR',
+            os.path.join(os.path.expanduser('~'), '.ros', 'webot_package_logs'),
+        )
+        os.makedirs(base, exist_ok=True)
+        path = os.path.join(base, filename)
+    parent = os.path.dirname(path)
+    if parent:
+        os.makedirs(parent, exist_ok=True)
+    return path
+
+
 class Logger:
     def __init__(self, filename):
-        self.filename = filename
+        self.filename = _resolve_log_path(filename)
         self.start_time = time.time()
         # Open the file in append mode
         with open(self.filename, 'w') as file:
@@ -69,7 +86,7 @@ class Logger:
 
 class Logger_h:
     def __init__(self, filename):
-        self.filename = filename
+        self.filename = _resolve_log_path(filename)
         self.start_time = time.time()
         # Check if the file exists
         if not os.path.exists(self.filename):

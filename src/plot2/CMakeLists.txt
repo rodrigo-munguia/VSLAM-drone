@@ -14,10 +14,16 @@ find_package(std_msgs REQUIRED)
 find_package(interfaces REQUIRED)
 find_package(sensor_msgs REQUIRED)
 find_package(geometry_msgs REQUIRED)
+find_package(nav_msgs REQUIRED)
+find_package(tf2 REQUIRED)
 find_package(PkgConfig REQUIRED)
-find_package(cv_bridge)
-find_package( OpenCV REQUIRED)
+find_package(cv_bridge REQUIRED)
+find_package(OpenCV REQUIRED)
 pkg_check_modules(GLFW REQUIRED glfw3)
+if(NOT GLFW_FOUND)
+  message(FATAL_ERROR
+    "glfw3 not found. Install: sudo apt-get install libglfw3-dev")
+endif()
 
 # uncomment the following section in order to fill in
 # further dependencies manually.
@@ -69,14 +75,17 @@ target_link_libraries(plot_component2
 )
 
 ament_target_dependencies(plot_component2
-  "interfaces"  
+  "interfaces"
   "rclcpp"
   "rclcpp_components"
-  "std_msgs"  
+  "std_msgs"
   "sensor_msgs"
   "geometry_msgs"
+  "nav_msgs"
+  "tf2"
   "OpenCV"
   "cv_bridge")
+target_include_directories(plot_component2 PRIVATE ${GLFW_INCLUDE_DIRS})
 
 
 rclcpp_components_register_nodes(plot_component2 "plot2::PLOTscene2")
@@ -100,14 +109,18 @@ install(TARGETS
 
 
 if(BUILD_TESTING)
-  find_package(ament_lint_auto REQUIRED)
-  # the following line skips the linter which checks for copyrights
-  # uncomment the line when a copyright and license is not present in all source files
-  #set(ament_cmake_copyright_FOUND TRUE)
-  # the following line skips cpplint (only works in a git repo)
-  # uncomment the line when this package is not in a git repo
-  #set(ament_cmake_cpplint_FOUND TRUE)
-  ament_lint_auto_find_test_dependencies()
+  find_package(ament_lint_auto QUIET)
+  if(ament_lint_auto_FOUND)
+    ament_lint_auto_find_test_dependencies()
+  endif()
+  find_package(ament_cmake_gtest QUIET)
+  if(ament_cmake_gtest_FOUND)
+    ament_add_gtest(test_plot_frame_conversions
+      test/test_plot_frame_conversions.cpp)
+    if(TARGET test_plot_frame_conversions)
+      target_include_directories(test_plot_frame_conversions PRIVATE src)
+    endif()
+  endif()
 endif()
 
 

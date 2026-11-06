@@ -17,6 +17,9 @@
 #include <iostream>
 #include <fstream>
 #include <sstream>
+#include <stdexcept>
+#include <limits>
+#include <ament_index_cpp/get_package_share_directory.hpp>
 #include "../../common/Transforms/Euler_to_Ra2b.hpp"
 
 
@@ -56,9 +59,17 @@ namespace control
     
     // Set client
     client_ekf_run_ = create_client<interfaces::srv::SimpleServ>("ekf_run_service");
+    client_ekf_enable_ = create_client<std_srvs::srv::SetBool>(PAR.Ekf_enable_service);
     client_gslam_run_ = create_client<interfaces::srv::SimpleServ>("globalslam_run_service");
     client_webot_run_ = create_client<interfaces::srv::SimpleServ>("webot_service");
     client_plot_ = create_client<interfaces::srv::SimpleServ>("plot_service");
+
+    RCLCPP_INFO(
+      this->get_logger(),
+      "Control Slam_feedback=%s Slam_feedback_interface=%s odom_topic=%s",
+      PAR.Slam_feedback ? "true" : "false",
+      PAR.Slam_feedback_interface.c_str(),
+      PAR.Odometry_topic.c_str());
 
     run_control_plan = false;
     control_thread_loop_run = true;
@@ -83,8 +94,17 @@ namespace control
   void ControlQuad::setParameters()
   {  
     //  Declare node parameters (and default values)
-     this->declare_parameter<string>("Control_plan_path", "/change_this");
+     // Empty → resolve installed ekf_monoslam_bringup/control_plan.txt (cwd-independent).
+     // Absolute existing path is preserved as an explicit override.
+     this->declare_parameter<string>("Control_plan_path", "");
      this->declare_parameter<bool>("Slam_feedback",false);
+     this->declare_parameter<std::string>("Slam_feedback_interface", "odometry");
+     this->declare_parameter<std::string>("Odometry_topic", "odometry");
+     this->declare_parameter<std::string>("Odometry_expect_frame_id", "odom");
+     this->declare_parameter<std::string>(
+       "Odometry_expect_child_frame_id", "base_link");
+     this->declare_parameter<std::string>(
+       "Ekf_enable_service", "/EKFslam/enable");
      this->declare_parameter<double>("kp_x", 0.5);
      this->declare_parameter<double>("kp_y", 0.5);
      this->declare_parameter<double>("kp_z", 0.7);
@@ -119,7 +139,35 @@ namespace control
     
     // Set parameter struct
      this->get_parameter("Control_plan_path",PAR.Control_plan_path);
-     this->get_parameter("Slam_feedback",PAR.Slam_feedback);    
+     // Empty / relative → installed ekf_monoslam_bringup resource.
+     // Absolute existing path is preserved (explicit override).
+     if (PAR.Control_plan_path.empty() || PAR.Control_plan_path[0] != '/') {
+       try {
+         const std::string share =
+           ament_index_cpp::get_package_share_directory("ekf_monoslam_bringup");
+         const std::string installed = share + "/control_plan.txt";
+         if (PAR.Control_plan_path.empty()) {
+           PAR.Control_plan_path = installed;
+         } else {
+           // relative: prefer installed default for cwd independence
+           PAR.Control_plan_path = installed;
+         }
+         RCLCPP_INFO(this->get_logger(),
+           "Control_plan_path resolved to %s", PAR.Control_plan_path.c_str());
+       } catch (const std::exception & e) {
+         RCLCPP_WARN(this->get_logger(),
+           "Could not resolve ekf_monoslam_bringup share (%s); "
+           "using Control_plan_path='%s'", e.what(), PAR.Control_plan_path.c_str());
+       }
+     }
+     this->get_parameter("Slam_feedback",PAR.Slam_feedback);
+     this->get_parameter("Slam_feedback_interface", PAR.Slam_feedback_interface);
+     this->get_parameter("Odometry_topic", PAR.Odometry_topic);
+     this->get_parameter(
+       "Odometry_expect_frame_id", PAR.Odometry_expect_frame_id);
+     this->get_parameter(
+       "Odometry_expect_child_frame_id", PAR.Odometry_expect_child_frame_id);
+     this->get_parameter("Ekf_enable_service", PAR.Ekf_enable_service);
      this->get_parameter("kp_x",PAR.kp_x); 
      this->get_parameter("kp_y",PAR.kp_y); 
      this->get_parameter("kp_z",PAR.kp_z); 
@@ -156,17 +204,75 @@ namespace control
   //-----------------------------------------------------------
   void ControlQuad::setSubscribers()
   {
-    
-    sub_Imu_ = this->create_subscription<sensor_msgs::msg::Imu>("imu", 10, std::bind(&ControlQuad::Imu_callback, this, _1));     
-    sub_Gps_ = this->create_subscription<geometry_msgs::msg::PointStamped>("webot_robot/gps", 10, std::bind(&ControlQuad::Gps_callback, this, _1)); 
-    sub_Slam_ = this->create_subscription<interfaces::msg::Robotstate>("Robotstate_topic", 10, std::bind(&ControlQuad::Slam_callback, this, _1));
-    sub_Frame_ = this->create_subscription<interfaces::msg::Frame>("Frame_topic", 10, std::bind(&ControlQuad::Frame_callback, this, _1)); 
+    sub_Imu_ = this->create_subscription<sensor_msgs::msg::Imu>(
+      "imu", 10, std::bind(&ControlQuad::Imu_callback, this, _1));
+    sub_Gps_ = this->create_subscription<geometry_msgs::msg::PointStamped>(
+      "webot_robot/gps", 10, std::bind(&ControlQuad::Gps_callback, this, _1));
+    sub_Frame_ = this->create_subscription<interfaces::msg::Frame>(
+      "Frame_topic", 10, std::bind(&ControlQuad::Frame_callback, this, _1));
+
+    // Pose feedback source is exclusive (legacy XOR odometry).
+    // A5b: odometry mode additionally subscribes to Robotstate for
+    // radius_uncertainty only (intentional custom-interface exception).
+    if (PAR.Slam_feedback_interface == "odometry") {
+      sub_Odom_ = this->create_subscription<nav_msgs::msg::Odometry>(
+        PAR.Odometry_topic, 10,
+        std::bind(&ControlQuad::Odometry_callback, this, _1));
+      sub_Slam_ = this->create_subscription<interfaces::msg::Robotstate>(
+        "Robotstate_topic", 10,
+        std::bind(&ControlQuad::Slam_radius_only_callback, this, _1));
+      RCLCPP_INFO(
+        this->get_logger(),
+        "SLAM pose from Odometry '%s' (expect frames %s / %s); "
+        "radius_uncertainty from Robotstate_topic (A5b)",
+        PAR.Odometry_topic.c_str(),
+        PAR.Odometry_expect_frame_id.c_str(),
+        PAR.Odometry_expect_child_frame_id.c_str());
+    } else if (PAR.Slam_feedback_interface == "legacy") {
+      sub_Slam_ = this->create_subscription<interfaces::msg::Robotstate>(
+        "Robotstate_topic", 10,
+        std::bind(&ControlQuad::Slam_callback, this, _1));
+      RCLCPP_INFO(this->get_logger(), "SLAM feedback from legacy Robotstate_topic");
+    } else {
+      throw std::runtime_error(
+        "Unsupported Slam_feedback_interface='" + PAR.Slam_feedback_interface +
+        "'. Use 'legacy' or 'odometry'.");
+    }
   }
   //-----------------------------------------------------------
+  void ControlQuad::invalidate_cached_radius(bool request_ekf_reinit)
+  {
+    // Disarm first so any queued Robotstate callback cannot restore r_u.
+    radius_feedback_armed_ = false;
+    // Gate later Odometry re-arm on stamp: queued pre-reset Odometry messages
+    // keep older header.stamp and must not re-arm radius acceptance.
+    radius_reset_stamp_ = this->get_clock()->now();
+    radius_reset_stamp_valid_ = true;
+    mutex_robot_state.lock();
+    r_c.r_u = std::numeric_limits<double>::quiet_NaN();
+    mutex_robot_state.unlock();
+    mutex_slam_state.lock();
+    r_s.r_u = std::numeric_limits<double>::quiet_NaN();
+    mutex_slam_state.unlock();
+    if (request_ekf_reinit && client_ekf_run_) {
+      auto request = std::make_shared<interfaces::srv::SimpleServ::Request>();
+      request->cmd = 'i';
+      (void)client_ekf_run_->async_send_request(request);
+      RCLCPP_INFO(
+        this->get_logger(),
+        "Coordinated reset: radius disarmed/cleared; requested EKF re-init ('i')");
+    }
+  }
+
   void ControlQuad::reinit_control()
   {
     cmd_idx = 0;
     actual_z_flag = false;
+    slam_yaw_init_flag_ = false;
+    slam_init_yaw_ = 0.0;
+    slam_init_z_ = 0.0;
+    // Constructor and plan reload: clear radius without requiring EKF up yet.
+    invalidate_cached_radius(false);
     double cam_axis_x = PAR.Mono_cam_2_robot_axis_x;
     double cam_axis_y = PAR.Mono_cam_2_robot_axis_y;
     double cam_axis_z = PAR.Mono_cam_2_robot_axis_z;
@@ -305,29 +411,29 @@ namespace control
         result = go_point(r_d);      
       }
       if(cmd == "StartSLAM")
-      { 
-        cout << "control-> start SLAM" << endl;
-        auto request = std::make_shared<interfaces::srv::SimpleServ::Request>();
-        request->cmd = 'r';              
-        auto res = client_ekf_run_->async_send_request(request);
-        result = true;         
+      {
+        cout << "control-> start SLAM (SetBool enable=true)" << endl;
+        auto request = std::make_shared<std_srvs::srv::SetBool::Request>();
+        request->data = true;
+        (void)client_ekf_enable_->async_send_request(request);
+        result = true;
       }
       if(cmd == "ActivateVisualUpdate")
-      { 
+      {
         cout << "control-> Activate SLAM visual updates" << endl;
         auto request = std::make_shared<interfaces::srv::SimpleServ::Request>();
-        request->cmd = 'v';              
+        request->cmd = 'v';
         auto res = client_ekf_run_->async_send_request(request);
-        result = true;      
-      }  
+        result = true;
+      }
 
       if(cmd == "StopSLAM")
-      { 
-        cout << "control-> Stop SLAM" << endl;
-        auto request = std::make_shared<interfaces::srv::SimpleServ::Request>();
-        request->cmd = 's';              
-        auto res = client_ekf_run_->async_send_request(request);
-        result = true;         
+      {
+        cout << "control-> Stop SLAM (SetBool enable=false)" << endl;
+        auto request = std::make_shared<std_srvs::srv::SetBool::Request>();
+        request->data = false;
+        (void)client_ekf_enable_->async_send_request(request);
+        result = true;
       }
       if(cmd == "StartUncertainty")
       {
@@ -400,13 +506,13 @@ namespace control
       }
       if (request->cmd == 'i')
       { 
-        cout << "control-> request received: Re-init control plan" << endl;
+        cout << "control-> request received: Re-init control plan (coordinated)" << endl;
         mutex_run_plan.lock();
             run_control_plan = false;
         mutex_run_plan.unlock();
-        
+        // A6: invalidate radius before/with EKF re-init; re-arm on next odometry.
+        invalidate_cached_radius(true);
         reinit_control();
-                
       }
       if (request->cmd == 'c')
       {

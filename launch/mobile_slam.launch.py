@@ -42,7 +42,7 @@ def generate_launch_description():
         lslamParams = yaml.safe_load(file)['/lslam']['ros__parameters']
     
     with open(configFile, 'r') as file:
-        plotParams = yaml.safe_load(file)['/plot']['ros__parameters']
+        plotParams = yaml.safe_load(file).get('/plot2', {}).get('ros__parameters', {})
     
     with open(configFile, 'r') as file:
         gslamParams = yaml.safe_load(file)['/gslam']['ros__parameters']        
@@ -65,9 +65,9 @@ def generate_launch_description():
                     name='EKFslam',
                     parameters= [lslamParams]),
                  ComposableNode(
-                    package='plot',
-                    plugin='plot::PLOTscene',
-                    name='PLOTscene',
+                    package='plot2',
+                    plugin='plot2::PLOTscene2',
+                    name='PLOTscene2',
                     parameters= [plotParams]),
                 ComposableNode(
                     package='globalslam',

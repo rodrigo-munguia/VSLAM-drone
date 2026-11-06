@@ -20,8 +20,44 @@ struct parameters
     string Data_origin;
     double x_vel_run_time;
 
+    // A1: "legacy" uses custom interfaces topics; "standard" uses remappable
+    // sensor_msgs / geometry_msgs / mavros_msgs inputs for migrated modalities.
+    string Sensor_input_mode;
+    // A9: "derived_altitude" (mavros Altitude) | "fluid_pressure" (FluidPressure).
+    // Exclusive — no fusion / fallback between sources.
+    string Altitude_input_mode;
 
-    
+    // A2: nav_msgs/Odometry frame ids (pose in parent, twist in child).
+    string Odometry_frame_id;
+    string Odometry_child_frame_id;
+
+    // A4: max poses retained in ~/path (oldest dropped).
+    int Path_max_poses;
+
+    // A8: "yaml" uses Mono_cam_* parameters; "camera_info" uses sensor_msgs/CameraInfo.
+    // No silent merge/fallback between sources.
+    string Calibration_source;
+    // A8: when Calibration_source=camera_info — "raw" maps K+D; "rectified" maps P, D=0.
+    string Camera_info_image_path;
+    // A8: max Image messages held while waiting for first valid CameraInfo (oldest dropped).
+    int Camera_info_waiting_image_bound;
+    // A8: expected optical frame_id (empty = do not enforce match with Image).
+    string Camera_info_expected_frame_id;
+    // A9: CameraInfo subscription reliability ("reliable" | "best_effort");
+    // durability remains volatile (not transient_local).
+    string Camera_info_qos_reliability;
+
+    // A9 FluidPressure → relative altitude (ISA troposphere).
+    // Pressure_reference_policy: only "first_valid" in this slice.
+    string Pressure_reference_policy;
+    double Pressure_t0_K;           // ISA sea-level T used in closed form
+    double Pressure_min_Pa;
+    double Pressure_max_Pa;
+    // +up lever arm body-origin → pressure sensor [m]; 0 = treat as body height.
+    double Pressure_z_lever_arm_m;
+    string Pressure_expected_frame_id;  // empty = do not enforce
+    int Pressure_waiting_bound;         // bound pre-reference discards log only
+
     int Robot_state_size;   
     
     // initial conditions

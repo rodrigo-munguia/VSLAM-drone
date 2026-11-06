@@ -1,81 +1,191 @@
+# EKF-MonoSLAM Aided by Range-to-Base Measurements
 
-# EKF-MonoSLAM Aided by Range- to-Base Measurements
+C++ ROS 2 implementation of the SLAM approach described in:
 
-C++ Ros2-based implementation of the Simultaneous Localization and Mapping (SLAM) approach described in the paper:
-
-"UAV Navigation Using EKF-MonoSLAM Aided by Range-to-Base Measurements" (https://doi.org/10.3390/drones9080570)
- 
+**“UAV Navigation Using EKF-MonoSLAM Aided by Range-to-Base Measurements”**  
+https://doi.org/10.3390/drones9080570
 
 ![](figures/Graphical_abstract.png)
 
+This repository is a **standalone research / simulation stack**. It is
+**independent of the UAV accelerator** project.
 
-The Hybrid VSLAM is composed of the following ROS 2 components and nodes (See https://docs.ros.org/en/galactic/Concepts/About-Composition.html):
+## Tested environment
 
+| Item | Version |
+|---|---|
+| OS | Ubuntu 24.04 |
+| ROS 2 | Jazzy |
+| Webots | R2025a |
+| Viewer (default) | Plot2 (ImGui / GLFW) |
+| Viewer (optional) | RViz2 |
 
+Older README notes mentioning Galactic / Webots R2023a describe the upstream
+paper baseline, not the current Jazzy bring-up.
 
-**ROS 2 components:** 
+## Components
 
--  **Local SLAM** The local SLAM component implements a filter-based, visual SLAM system with a state vector size constrained to ensure real-time operation. On its own, this component generates up-to-metric-scale (world-referenced) estimates of both the robot's state and a local feature map. However, because older features are removed from the state vector to maintain real-time performance, previously visited areas of the environment cannot be recognized. Consequently, the accumulated positional drift cannot be corrected by this process alone.
-- **Global SLAM** Not used.
--  **Control**  The control component implements the following high-level control strategies as described in the paper: (i) waypoint control, (ii) visual marker-based control, (iii) area exploration, and (iv) return-to-home.
--  **Webot package** Defines the virtual environment (world) used for experiments, including the UAV (robot) and its low-level controller, simulated using the Webots platform.
--  **Webot bridge** This component interfaces certain sensor readings from the virtual robot with the format required by the SCLAM system.
-- **Plot** (Deprecated) Based on OpenCV-VIZ, the plot component implements a 3d scene of the robot's pose and trajectory as well as a map of visual features.
-- **Plot2** The plot component implements a 3d scene of the robot's pose and trajectory as well as a map of visual features.
+**Composable nodes (app container):** Local SLAM (`EKFslam`), Webots bridge
+(`WEBOTb`), Control (`ControlQuad`), optional Plot2.
 
+**Separate processes:** Webots (`webot_package`), operator keyboard, optional
+RViz2.
 
-**ROS 2 nodes:**
+**Also in-tree (not required for the default experiment):** Global SLAM,
+dataset playback. The legacy OpenCV **`plot`** package has been **removed**.
 
-- **Keyboard** Implements a simple command-line interface to interact with the Hybrid VSLAM application.
+## Dependencies
 
+**Required for the integrated experiment**
 
-**Dependencies** (Tested in: Ubuntu 20.04)**:**
+- ROS 2 Jazzy + `webots_ros2` (`sudo apt-get install ros-jazzy-webots-ros2`)
+- Webots R2025a (`WEBOTS_HOME`)
+- Armadillo + BLAS/LAPACK
+- OpenCV (contrib modules as needed by Local/Global SLAM; **VIZ/VTK not required** after `plot` removal)
+- GTSAM (Global SLAM package; needed if that package is built)
 
-1.- ROS 2 (Galactic), https://docs.ros.org/en/galactic/index.html
+**Optional**
 
-2.- Armadillo C++ library (tested with version 11.0.1), http://arma.sourceforge.net/ .
-    Armadillo requires BLAS/OPENBLAS and LAPACK libraries installed 
+- `libglfw3-dev` — required only for Plot2
+- `ros-jazzy-rviz2` — required only for `--viewer rviz2`
+- ImGui sources are vendored under `src/plot2`
 
-3.- OpenCV with extra modules installed (opencv_contrib) (tested with OpenCV version 4.2.0), https://opencv.org/ 
-    The following OpenCV contrib modules are also required or recommended:
-    - VIZ (Required for old Plot module). VIZ requires VTK support (tested with version 8.1.0).
-    - SFM (Recommended). For SFM dependencies check: https://docs.opencv.org/4.x/db/db8/tutorial_sfm_installation.html Note. For compilling OpenCV with SFM, Ceres solver library http://ceres-solver.org/ version < 2.0 is required (tested with 1.14). 
+**Deferred:** FluidPressure altitude input remains deferred (derived GPS-height
+altitude is the default).
 
-4.- GTSAM c++ library (tested with version 4.1.1) https://gtsam.org/
+## Build (conventional trees)
 
-5.- Webots Simulator (tested with version R2023a) https://cyberbotics.com/
+```bash
+cd ~/DEV/projects/EKF-MonoSLAM-Range-To-Base
+source /opt/ros/jazzy/setup.bash
+# Plot2 needs GLFW headers at build time:
+sudo apt-get install libglfw3-dev
 
-6.- ImGui (tested with version v1.92.0) https://github.com/ocornut/imgui
-
-**Usage:**
-
-1.- Use colcon for compiling the project  (in the root project folder):  
+colcon build \
+  --packages-select interfaces localslam webotbridge control \
+    ekf_monoslam_bringup webot_package plot2 keyboard \
+  --build-base build --install-base install
 ```
-source /opt/ros/galactic/setup.bash
-colcon build --packages-select interfaces
-. install/setup.bash
-colcon build
-colcon build
+
+Standalone Local SLAM only:
+
+```bash
+colcon build --packages-select interfaces localslam \
+  --build-base build --install-base install
 ```
 
-2.- After successfully compiling, launch the components using:
-```
+Override the install prefix with `EKF_INSTALL_BASE` if needed (default for
+`./launch2.sh` is `install/`).
+
+## One-command integrated launch
+
+```bash
+source /opt/ros/jazzy/setup.bash
+source install/setup.bash
 ./launch2.sh
+# equivalents:
+./launch2.sh --viewer plot2
+./launch2.sh --viewer rviz2
+./launch2.sh --viewer none
+./launch2.sh --slam-feedback false   # Stage A: GT GPS control feedback
 ```
-At this point, the following elements must be launched: (i) the Webots virtual world, (ii) Viz-viewer, (iii) a terminal displaying the state of the Webots component, and (iv) a terminal showing the following menu:
-```
-|   'q' to quit.
-|   's'-> Start/Stop SLAM          w-> Reset Control-SLAM
-|   'a'-> Start/Stop Control Plan                
-|   '-'-> zoom out '+' ->  zoom in '1'-> x-y view '2' -> x-z view  '3'->y-z view
-|   '8'-> view up '5' ->  view down '4'-> view left '6' -> view right  '7'-> clear plot
-|   '9'-> save screenshot '0' -> log statistics
-|   't'-> TakeOff / landing 
-|         r (forward)                  i (up)         
-| d (left)          g(right)   j(turn L)     l (turn R) 
-|         f (back)                     k(down)   
-```
-3.- In the last terminal, press the "a" key to start the control plan (the control plan can be modified in the control_plan.txt file).
 
+Starts **one** Webots, **one** application container, **one** chosen viewer
+(or none), plus an operator terminal. Status/logs stay in the launching
+terminal. Ctrl-C cleans up launcher-owned processes.
 
-*Notes:* The system parameters can be modified in the configuration file /config/quad_params.yaml to adjust the method's results and performance.
+Viewer differences: see [`docs/viewers.md`](docs/viewers.md).
+
+## Operator controls
+
+In the **EKF-Operator** terminal:
+
+| Key | Action |
+|---|---|
+| `a` | **Start / stop the control plan** (`control_plan.txt`) |
+| `s` | Enable / disable Local SLAM (`/EKFslam/enable`; visual on start) |
+| `w` | Coordinated reset (`/EKFslam/reset` + control; clear Plot2 if present) |
+| `t` | Takeoff / land |
+| `q` | Quit operator |
+| flight keys | `r/f/d/g` translate, `i/k` up/down, `j/l` yaw, space stop |
+
+Plot2-only keys (`-/+`, `1`–`3`, pan `4/5/6/8`, `7` clear, `9` screenshot) are
+active only when `--viewer plot2`. Under RViz2, use RViz’s own navigation UI.
+
+## Configuration
+
+| Source | Role |
+|---|---|
+| `config/quad_params.yaml` | **Authoritative** experiment parameters |
+| `control_plan.txt` | Default mission plan (installed with bringup) |
+| `config/mobile_params.yaml`, `omni_params.yaml` | Alternate platforms |
+
+Installed copies live under
+`install/ekf_monoslam_bringup/share/ekf_monoslam_bringup/`. After editing
+`config/` or `control_plan.txt`, **rebuild/reinstall `ekf_monoslam_bringup`**
+so the share tree updates (do not maintain a second conflicting copy by hand).
+
+## Standalone Local SLAM
+
+```bash
+source install/setup.bash
+ros2 launch localslam localslam.launch.py
+```
+
+Remap standard inputs (`~/image`, `~/imu`, `~/odometry`, …) as documented in
+`docs/history/A7_localslam_standalone.md`.
+
+## Interfaces (summary)
+
+**Standard (preferred):** `nav_msgs/Odometry` `/odometry`, `nav_msgs/Path`
+`/EKFslam/path`, `sensor_msgs/PointCloud2` `/EKFslam/landmarks`, plus remapped
+`sensor_msgs` / `mavros_msgs` sensor inputs.
+
+**Custom retained:** `interfaces/Frame`, `interfaces/Lslam`, range-to-base and
+related experiment messages; `interfaces/EstimatorReference` (latched Local
+SLAM reference epoch for GT adapters).
+
+**Ground truth:** `nav_msgs/Path` `/ground_truth/path` (RViz2) and
+`geometry_msgs/PointStamped` `GT_topic` (Plot2) from the same synchronized
+Webots→public-odom conversion. Path pose orientation is identity
+(unspecified).
+
+## Repository layout
+
+```
+config/          experiment YAML (authoritative)
+control_plan.txt default plan
+launch/          repo-level launch helpers
+launch2.sh       canonical integrated entry point
+src/             ROS packages + shared common/
+docs/            index, viewers, history/, evidence/
+tools/           smoke/, audit/, analysis/
+figures/         paper graphics
+build/ install/ log/   conventional colcon trees (gitignored)
+```
+
+## Ground-truth / estimator reference (summary)
+
+Local SLAM publishes latched `~/estimator_reference`
+(`interfaces/EstimatorReference`) on init and when altitude home latches;
+`valid=false` on reset. The Webots bridge matches GPS history to
+`heading_stamp` / `altitude_stamp` (no first-`/odometry` or empty-Path
+epoch). Parameters under `/webotbridge` in `config/quad_params.yaml`:
+`GT_history_duration_sec`, `GT_match_max_dt_sec`, `GT_path_max_poses`
+(values &lt; 1 clamp to 1; **not** unlimited), `GT_path_frame_id`.
+
+Inspect: `ros2 topic echo /ground_truth/path --once` after
+`./launch2.sh --viewer rviz2`.
+
+## Known limitations
+
+- Operational smoke checks are **not** accuracy or paper-parity claims.
+- Plot2 latest-estimate vs latest-GT error remains **approximate** (no full
+  temporal matching of estimator stamps).
+- GT Path orientation is unspecified (identity quaternion).
+- FluidPressure altitude support is deferred.
+- RViz2 does not show Plot2 image overlays or custom statistics.
+- Deprecated OpenCV `plot` is removed; do not expect its topic semantics.
+
+More detail: [`docs/README.md`](docs/README.md),
+[`docs/history/A9_integrated_launch_plot2.md`](docs/history/A9_integrated_launch_plot2.md).

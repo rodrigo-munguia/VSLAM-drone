@@ -3,30 +3,14 @@
 
 #include <armadillo>
 #include "opencv2/opencv.hpp"
+#include "../../common/keyframe_types.hpp"
 
 
 
 using namespace std;
 
 
-//------  keyframe structure
-struct KEYFRAME
-{
-    cv::Mat frame; // image frame
-    arma::vec::fixed<3> t_c2r;  // camera to robot position vector
-    arma::mat::fixed<3,3> Rr2c; // robot to camera rotation matrix 
-    arma::vec::fixed<3> r_N; // position of the robot, expressed in the navigation frame 
-    arma::mat::fixed<3,3> Rn2r; // navigation to robot rotation matrix
-    arma::mat::fixed<3,3> Rn2c;
-    arma::vec::fixed<3> t_c2n;
-    vector<cv::KeyPoint> keyPoints_all; // Keypoints associated with the KeyFrame
-    cv::Mat Descriptors_all;   //Descriptors of the Keypoints
-    vector<int64> Idx_Matched_points;  // Index of anchors that are mathed in the i-keyframe
-    vector<cv::Point2d> UV_Matched_points; // Pixel coordinates of the ancrhos matched in the i-keyframe
-    double radius_uncertainty; 
-
-};
-
+// KEYFRAME is defined in common/keyframe_types.hpp (shared with localslam).
 
 struct KeyFramesData
  {

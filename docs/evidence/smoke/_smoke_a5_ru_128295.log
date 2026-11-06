@@ -1,0 +1,127 @@
+[INFO] [launch]: All log files can be found below /home/rmung/.ros/log/2026-11-05-15-40-04-072358-PF5TDX8Y-128302
+[INFO] [launch]: Default logging verbosity is set to INFO
+[INFO] [component_container-1]: process started with pid [128340]
+[component_container-1] [INFO] [1793914804.385463581] [a5_ru_128302]: Load Library: /home/rmung/DEV/projects/EKF-MonoSLAM-Range-To-Base/install_a1/localslam/lib/liblocalslam_component.so
+[component_container-1] [INFO] [1793914804.435324839] [a5_ru_128302]: Found class: rclcpp_components::NodeFactoryTemplate<localslam::EKFslam>
+[component_container-1] [INFO] [1793914804.435372446] [a5_ru_128302]: Instantiate class: rclcpp_components::NodeFactoryTemplate<localslam::EKFslam>
+[component_container-1] [INFO] [1793914804.444755938] [EKFslam]: Subscription plan: standard_migrated=1 rangetobase=1 (legacy frame/att/spd/range/alt = 0/0/0/0/0)
+[component_container-1] [INFO] [1793914804.448712271] [EKFslam]: EKFslam Sensor_input_mode=standard Altitude_input_mode=derived_altitude
+[component_container-1] 
+[INFO] [launch_ros.actions.load_composable_nodes]: Loaded node '/EKFslam' in container '/a5_ru_128302'
+[component_container-1] General configuration for OpenCV 4.6.0 =====================================
+[component_container-1]   Version control:               unknown
+[component_container-1] 
+[component_container-1]   Extra modules:
+[component_container-1]     Location (extra):            <<PKGBUILDDIR>>/contrib/modules
+[component_container-1]     Version control (extra):     unknown
+[component_container-1] 
+[component_container-1]   Platform:
+[component_container-1]     Host:                         x86_64
+[component_container-1]     CMake:                       3.28.3
+[component_container-1]     CMake generator:             Ninja
+[component_container-1]     CMake build tool:            /usr/bin/ninja
+[component_container-1]     Configuration:               Release
+[component_container-1] 
+[component_container-1]   CPU/HW features:
+[component_container-1]     Baseline:                    SSE SSE2
+[component_container-1]       requested:                 SSE2
+[component_container-1]       disabled:                  SSE3
+[component_container-1]     Dispatched code generation:  SSE4_1 SSE4_2 FP16 AVX AVX2 AVX512_SKX
+[component_container-1]       requested:                 SSE4_1 SSE4_2 AVX FP16 AVX2 AVX512_SKX
+[component_container-1]       SSE4_1 (14 files):         + SSE3 SSSE3 SSE4_1
+[component_container-1]       SSE4_2 (1 files):          + SSE3 SSSE3 SSE4_1 POPCNT SSE4_2
+[component_container-1]       FP16 (0 files):            + SSE3 SSSE3 SSE4_1 POPCNT SSE4_2 FP16 AVX
+[component_container-1]       AVX (4 files):             + SSE3 SSSE3 SSE4_1 POPCNT SSE4_2 AVX
+[component_container-1]       AVX2 (29 files):           + SSE3 SSSE3 SSE4_1 POPCNT SSE4_2 FP16 FMA3 AVX AVX2
+[component_container-1]       AVX512_SKX (5 files):      + SSE3 SSSE3 SSE4_1 POPCNT SSE4_2 FP16 FMA3 AVX AVX2 AVX_512F AVX512_COMMON AVX512_SKX
+[component_container-1] 
+[component_container-1]   C/C++:
+[component_container-1]     Built as dynamic libs?:      YES
+[component_container-1]     C++ standard:                11
+[component_container-1]     C++ Compiler:                /usr/bin/c++  (ver 13.2.0)
+[component_container-1]     C++ flags (Release):         -g -O2 -fno-omit-frame-pointer -mno-omit-leaf-frame-pointer -ffile-prefix-map=<<PKGBUILDDIR>>=. -flto=auto -ffat-lto-objects -fstack-protector-strong -fstack-clash-protection -Wformat -Werror=format-security -fcf-protection -fdebug-prefix-map=<<PKGBUILDDIR>>=/usr/src/opencv-4.6.0+dfsg-13.1ubuntu1 -Wdate-time -D_FORTIFY_SOURCE=3   -fsigned-char -W -Wall -Wreturn-type -Wnon-virtual-dtor -Waddress -Wsequence-point -Wformat -Wformat-security -Wmissing-declarations -Wundef -Winit-self -Wpointer-arith -Wshadow -Wsign-promo -Wuninitialized -Wsuggest-override -Wno-delete-non-virtual-dtor -Wno-comment -Wimplicit-fallthrough=3 -Wno-strict-overflow -fdiagnostics-show-option -Wno-long-long -pthread -fomit-frame-pointer -ffunction-sections -fdata-sections  -msse -msse2 -fvisibility=hidden -fvisibility-inlines-hidden -g -O2 -fno-omit-frame-pointer -mno-omit-leaf-frame-pointer -ffile-prefix-map=<<PKGBUILDDIR>>=. -flto=auto -ffat-lto-objects -fstack-protector-strong -fstack-clash-protection -Wformat -Werror=format-security -fcf-protection -fdebug-prefix-map=<<PKGBUILDDIR>>=/usr/src/opencv-4.6.0+dfsg-13.1ubuntu1  -DNDEBUG
+[component_container-1]     C++ flags (Debug):           -g -O2 -fno-omit-frame-pointer -mno-omit-leaf-frame-pointer -ffile-prefix-map=<<PKGBUILDDIR>>=. -flto=auto -ffat-lto-objects -fstack-protector-strong -fstack-clash-protection -Wformat -Werror=format-security -fcf-protection -fdebug-prefix-map=<<PKGBUILDDIR>>=/usr/src/opencv-4.6.0+dfsg-13.1ubuntu1 -Wdate-time -D_FORTIFY_SOURCE=3   -fsigned-char -W -Wall -Wreturn-type -Wnon-virtual-dtor -Waddress -Wsequence-point -Wformat -Wformat-security -Wmissing-declarations -Wundef -Winit-self -Wpointer-arith -Wshadow -Wsign-promo -Wuninitialized -Wsuggest-override -Wno-delete-non-virtual-dtor -Wno-comment -Wimplicit-fallthrough=3 -Wno-strict-overflow -fdiagnostics-show-option -Wno-long-long -pthread -fomit-frame-pointer -ffunction-sections -fdata-sections  -msse -msse2 -fvisibility=hidden -fvisibility-inlines-hidden -g  -DDEBUG -D_DEBUG
+[component_container-1]     C Compiler:                  /usr/bin/cc
+[component_container-1]     C flags (Release):           -g -O2 -fno-omit-frame-pointer -mno-omit-leaf-frame-pointer -ffile-prefix-map=<<PKGBUILDDIR>>=. -flto=auto -ffat-lto-objects -fstack-protector-strong -fstack-clash-protection -Wformat -Werror=format-security -fcf-protection -fdebug-prefix-map=<<PKGBUILDDIR>>=/usr/src/opencv-4.6.0+dfsg-13.1ubuntu1 -Wdate-time -D_FORTIFY_SOURCE=3   -fsigned-char -W -Wall -Wreturn-type -Waddress -Wsequence-point -Wformat -Wformat-security -Wmissing-declarations -Wmissing-prototypes -Wstrict-prototypes -Wundef -Winit-self -Wpointer-arith -Wshadow -Wuninitialized -Wno-comment -Wimplicit-fallthrough=3 -Wno-strict-overflow -fdiagnostics-show-option -Wno-long-long -pthread -fomit-frame-pointer -ffunction-sections -fdata-sections  -msse -msse2 -fvisibility=hidden -g -O2 -fno-omit-frame-pointer -mno-omit-leaf-frame-pointer -ffile-prefix-map=<<PKGBUILDDIR>>=. -flto=auto -ffat-lto-objects -fstack-protector-strong -fstack-clash-protection -Wformat -Werror=format-security -fcf-protection -fdebug-prefix-map=<<PKGBUILDDIR>>=/usr/src/opencv-4.6.0+dfsg-13.1ubuntu1  -DNDEBUG
+[component_container-1]     C flags (Debug):             -g -O2 -fno-omit-frame-pointer -mno-omit-leaf-frame-pointer -ffile-prefix-map=<<PKGBUILDDIR>>=. -flto=auto -ffat-lto-objects -fstack-protector-strong -fstack-clash-protection -Wformat -Werror=format-security -fcf-protection -fdebug-prefix-map=<<PKGBUILDDIR>>=/usr/src/opencv-4.6.0+dfsg-13.1ubuntu1 -Wdate-time -D_FORTIFY_SOURCE=3   -fsigned-char -W -Wall -Wreturn-type -Waddress -Wsequence-point -Wformat -Wformat-security -Wmissing-declarations -Wmissing-prototypes -Wstrict-prototypes -Wundef -Winit-self -Wpointer-arith -Wshadow -Wuninitialized -Wno-comment -Wimplicit-fallthrough=3 -Wno-strict-overflow -fdiagnostics-show-option -Wno-long-long -pthread -fomit-frame-pointer -ffunction-sections -fdata-sections  -msse -msse2 -fvisibility=hidden -g  -DDEBUG -D_DEBUG
+[component_container-1]     Linker flags (Release):      -Wl,-Bsymbolic-functions -flto=auto -ffat-lto-objects -Wl,-z,relro -Wl,-z,now  -Wl,--gc-sections -Wl,--as-needed -Wl,--no-undefined -Wl,-Bsymbolic-functions -flto=auto -ffat-lto-objects -Wl,-z,relro -Wl,-z,now 
+[component_container-1]     Linker flags (Debug):        -Wl,-Bsymbolic-functions -flto=auto -ffat-lto-objects -Wl,-z,relro -Wl,-z,now  -Wl,--gc-sections -Wl,--as-needed -Wl,--no-undefined  
+[component_container-1]     ccache:                      NO
+[component_container-1]     Precompiled headers:         NO
+[component_container-1]     Extra dependencies:          dl m pthread rt
+[component_container-1]     3rdparty dependencies:
+[component_container-1] 
+[component_container-1]   OpenCV modules:
+[component_container-1]     To be built:                 alphamat aruco barcode bgsegm bioinspired calib3d ccalib core cvv datasets dnn dnn_objdetect dnn_superres dpm face features2d flann freetype fuzzy hdf hfs highgui img_hash imgcodecs imgproc intensity_transform java line_descriptor mcc ml objdetect optflow phase_unwrapping photo plot quality rapid reg rgbd saliency shape stereo stitching structured_light superres surface_matching text tracking video videoio videostab viz wechat_qrcode ximgproc xobjdetect xphoto
+[component_container-1]     Disabled:                    python3 world
+[component_container-1]     Disabled by dependency:      sfm
+[component_container-1]     Unavailable:                 cudaarithm cudabgsegm cudacodec cudafeatures2d cudafilters cudaimgproc cudalegacy cudaobjdetect cudaoptflow cudastereo cudawarping cudev gapi julia matlab ovis python2 ts
+[component_container-1]     Applications:                apps
+[component_container-1]     Documentation:               doxygen python javadoc
+[component_container-1]     Non-free algorithms:         NO
+[component_container-1] 
+[component_container-1]   GUI:                           QT5
+[component_container-1]     QT:                          YES (ver 5.15.12 )
+[component_container-1]       QT OpenGL support:         YES (Qt5::OpenGL 5.15.12)
+[component_container-1]     OpenGL support:              YES (/usr/lib/x86_64-linux-gnu/libOpenGL.so /usr/lib/x86_64-linux-gnu/libGLX.so /usr/lib/x86_64-linux-gnu/libGLU.so)
+[component_container-1]     VTK support:                 YES (ver 9.1.0)
+[component_container-1] 
+[component_container-1]   Media I/O: 
+[component_container-1]     ZLib:                        /usr/lib/x86_64-linux-gnu/libz.so (ver 1.3)
+[component_container-1]     JPEG:                        /usr/lib/x86_64-linux-gnu/libjpeg.so (ver 80)
+[component_container-1]     WEBP:                        /usr/lib/x86_64-linux-gnu/libwebp.so (ver encoder: 0x020f)
+[component_container-1]     PNG:                         /usr/lib/x86_64-linux-gnu/libpng.so (ver 1.6.43)
+[component_container-1]     TIFF:                        /usr/lib/x86_64-linux-gnu/libtiff.so (ver 42 / 4.5.1)
+[component_container-1]     JPEG 2000:                   OpenJPEG (ver 2.5.0)
+[component_container-1]     OpenEXR:                     OpenEXR::OpenEXR (ver 3.1.5)
+[component_container-1]     GDAL:                        YES (/usr/lib/x86_64-linux-gnu/libgdal.so)
+[component_container-1]     GDCM:                        YES (3.0.22)
+[component_container-1]     HDR:                         YES
+[component_container-1]     SUNRASTER:                   YES
+[component_container-1]     PXM:                         YES
+[component_container-1]     PFM:                         YES
+[component_container-1] 
+[component_container-1]   Video I/O:
+[component_container-1]     DC1394:                      YES (2.2.6)
+[component_container-1]     FFMPEG:                      YES
+[component_container-1]       avcodec:                   YES (60.31.102)
+[component_container-1]       avformat:                  YES (60.16.100)
+[component_container-1]       avutil:                    YES (58.29.100)
+[component_container-1]       swscale:                   YES (7.5.100)
+[component_container-1]       avresample:                NO
+[component_container-1]     GStreamer:                   YES (1.24.1)
+[component_container-1]     PvAPI:                       NO
+[component_container-1]     v4l/v4l2:                    YES (linux/videodev2.h)
+[component_container-1]     gPhoto2:                     YES
+[component_container-1] 
+[component_container-1]   Parallel framework:            TBB (ver 2021.11 interface 12110)
+[component_container-1] 
+[component_container-1]   Trace:                         YES (built-in)
+[component_container-1] 
+[component_container-1]   Other third-party libraries:
+[component_container-1]     VA:                          YES
+[component_container-1]     Lapack:                      YES (/usr/lib/x86_64-linux-gnu/liblapack.so /usr/lib/x86_64-linux-gnu/libblas.so)
+[component_container-1]     Eigen:                       YES (ver 3.4.0)
+[component_container-1]     Custom HAL:                  NO
+[component_container-1]     Protobuf:                    /usr/lib/x86_64-linux-gnu/libprotobuf.so (3.21.12)
+[component_container-1] 
+[component_container-1]   OpenCL:                        YES (no extra features)
+[component_container-1]     Include path:                /usr/include/CL
+[component_container-1]     Link libraries:              Dynamic load
+[component_container-1] 
+[component_container-1]   Python (for build):            /usr/bin/python3
+[component_container-1] 
+[component_container-1]   Java:                          
+[component_container-1]     ant:                         /usr/bin/ant (ver 1.10.14)
+[component_container-1]     JNI:                         /usr/lib/jvm/default-java/include /usr/lib/jvm/default-java/include/linux /usr/lib/jvm/default-java/include
+[component_container-1]     Java wrappers:               YES
+[component_container-1]     Java tests:                  NO
+[component_container-1] 
+[component_container-1]   Install to:                    /usr
+[component_container-1] -----------------------------------------------------------------
+[component_container-1] 
+[component_container-1] 
+[component_container-1] ARMA version: 12.6.7 (Cortisol Retox)
+[component_container-1] -> EKF-SLAM thread running... 
+[component_container-1] [INFO] [1793914804.583382415] [EKFslam]: localslam-> ~/enable true
+[component_container-1] -> robot state vector initialized 

@@ -1,8 +1,9 @@
 #include "control_component.hpp"
+#include "control_feedback_conversions.hpp"
 #include <tf2/LinearMath/Quaternion.h>
 #include <tf2/LinearMath/Matrix3x3.h>
 #include <cmath>
-#include "../../common/Transforms/Euler_to_Ra2b.hpp" 
+#include "../../common/Transforms/Euler_to_Ra2b.hpp"
 using namespace std;
 
 
@@ -118,56 +119,159 @@ namespace control
   //-----------------------------------------------------------------------
   void ControlQuad::Slam_callback(const interfaces::msg::Robotstate & msg)
   {
-    static double init_yaw;   
-    static bool init_yaw_flag = false;
-    static double init_z;
-
-    double x = msg.robot_state[7];
-    double y = msg.robot_state[8];
-    double z = msg.robot_state[9];
-    double roll = msg.robot_state[1];
-    double pitch = msg.robot_state[2];
-    double yaw = msg.robot_state[3];
-
-    double r_u = msg.radius_uncertainty;
-    
-    if(init_yaw_flag== false)
-    {
-        init_yaw = yaw;
-        init_yaw_flag = true;
-        init_z = r_a.z;
+    if (msg.robot_state.size() < 13) {
+      return;
     }
-    else
-    {  
-      mutex_slam_state.lock();
-        r_s.x = x;
-        r_s.y = y;
-        r_s.z = z;
-        r_s.yaw = restrictAngle(yaw-init_yaw);
-        r_s.roll = roll;
-        r_s.pitch = pitch;
-        r_s.r_u = r_u;
-      mutex_slam_state.unlock();  
+    const double x = msg.robot_state[7];
+    const double y = msg.robot_state[8];
+    const double z = msg.robot_state[9];
+    const double roll = msg.robot_state[1];
+    const double pitch = msg.robot_state[2];
+    const double yaw = msg.robot_state[3];
+    const double r_u = msg.radius_uncertainty;
 
+    if (!slam_yaw_init_flag_) {
+      slam_init_yaw_ = yaw;
+      slam_yaw_init_flag_ = true;
+      slam_init_z_ = r_a.z;
+      return;
+    }
 
-      if(PAR.Slam_feedback == true && actual_z_flag == true)
-      {
-          mutex_robot_state.lock();
-                  r_c.x = x;
-                  r_c.y = y;
-                  r_c.z = -z + init_z;
-                  r_c.roll = roll;
-                  r_c.pitch = -pitch;
-                  r_c.yaw = -restrictAngle(yaw-init_yaw);
-                  r_c.r_u = r_u;
-          mutex_robot_state.unlock();
+    mutex_slam_state.lock();
+    r_s.x = x;
+    r_s.y = y;
+    r_s.z = z;
+    r_s.yaw = restrictAngle(yaw - slam_init_yaw_);
+    r_s.roll = roll;
+    r_s.pitch = pitch;
+    r_s.r_u = r_u;
+    mutex_slam_state.unlock();
+
+    if (PAR.Slam_feedback == true && actual_z_flag == true) {
+      const auto c = feedback::legacy_internal_to_control(
+        x, y, z, roll, pitch, yaw, slam_init_yaw_, slam_init_z_);
+      mutex_robot_state.lock();
+      r_c.x = c.x;
+      r_c.y = c.y;
+      r_c.z = c.z;
+      r_c.roll = c.roll;
+      r_c.pitch = c.pitch;
+      r_c.yaw = c.yaw;
+      r_c.r_u = r_u;  // available only on legacy Robotstate
+      mutex_robot_state.unlock();
+    }
+  }
+
+  void ControlQuad::Slam_radius_only_callback(
+    const interfaces::msg::Robotstate & msg)
+  {
+    // A5b/A6: odometry mode — consume radius_uncertainty only.
+    // Pose / n2r / vels must not overwrite Odometry-derived feedback.
+    // Drop while disarmed so queued pre-reset callbacks cannot restore r_u.
+    if (PAR.Slam_feedback != true) {
+      return;
+    }
+    if (!radius_feedback_armed_) {
+      return;
+    }
+    const double r_u = msg.radius_uncertainty;
+    mutex_slam_state.lock();
+    r_s.r_u = r_u;
+    mutex_slam_state.unlock();
+    mutex_robot_state.lock();
+    r_c.r_u = r_u;
+    mutex_robot_state.unlock();
+  }
+
+  void ControlQuad::Odometry_callback(const nav_msgs::msg::Odometry & msg)
+  {
+    if (!feedback::expected_odometry_frames(
+          msg.header.frame_id, msg.child_frame_id,
+          PAR.Odometry_expect_frame_id, PAR.Odometry_expect_child_frame_id))
+    {
+      RCLCPP_WARN_THROTTLE(
+        this->get_logger(), *this->get_clock(), 5000,
+        "Rejecting Odometry with frames '%s'/'%s' (expected '%s'/'%s')",
+        msg.header.frame_id.c_str(), msg.child_frame_id.c_str(),
+        PAR.Odometry_expect_frame_id.c_str(),
+        PAR.Odometry_expect_child_frame_id.c_str());
+      return;
+    }
+
+    // A6: ignore Odometry stamped before the last coordinated radius invalidate.
+    // Prevents queued pre-reset poses from latching yaw / re-arming radius.
+    if (radius_reset_stamp_valid_) {
+      const rclcpp::Time stamp(msg.header.stamp);
+      if (stamp < radius_reset_stamp_) {
+        RCLCPP_DEBUG_THROTTLE(
+          this->get_logger(), *this->get_clock(), 2000,
+          "Ignoring pre-reset Odometry (stamp older than radius_reset_stamp_)");
+        return;
       }
+    }
 
-      //cout << "-> SLAM " << x << " " << y << "  " << z << endl;    
-    }  
+    const auto & p = msg.pose.pose.position;
+    tf2::Quaternion quat(
+      msg.pose.pose.orientation.x,
+      msg.pose.pose.orientation.y,
+      msg.pose.pose.orientation.z,
+      msg.pose.pose.orientation.w);
+    tf2::Matrix3x3 mat(quat);
+    double roll_pub = 0.0, pitch_pub = 0.0, yaw_pub = 0.0;
+    mat.getRPY(roll_pub, pitch_pub, yaw_pub);
 
+    if (!feedback::finite6(
+          p.x, p.y, p.z, roll_pub, pitch_pub, yaw_pub))
+    {
+      RCLCPP_WARN_THROTTLE(
+        this->get_logger(), *this->get_clock(), 5000,
+        "Rejecting non-finite Odometry pose");
+      return;
+    }
 
-  }  
+    if (!slam_yaw_init_flag_) {
+      slam_init_yaw_ = yaw_pub;  // public yaw latch
+      slam_yaw_init_flag_ = true;
+      slam_init_z_ = r_a.z;
+      return;
+    }
+
+    const auto s = feedback::odometry_pose_to_internal_slam(
+      p.x, p.y, p.z, roll_pub, pitch_pub, yaw_pub);
+    mutex_slam_state.lock();
+    r_s.x = s.x;
+    r_s.y = s.y;
+    r_s.z = s.z;
+    r_s.roll = s.roll;
+    r_s.pitch = s.pitch;
+    // Match legacy r_s.yaw = wrap(yaw_int - init_yaw_int)
+    r_s.yaw = feedback::wrap_pi(s.yaw - (-slam_init_yaw_));
+    // A5b: do not touch r_s.r_u — radius arrives separately from Robotstate.
+    mutex_slam_state.unlock();
+
+    if (PAR.Slam_feedback == true && actual_z_flag == true) {
+      const auto c = feedback::odometry_pose_to_control(
+        p.x, p.y, p.z, roll_pub, pitch_pub, yaw_pub,
+        slam_init_yaw_, slam_init_z_);
+      mutex_robot_state.lock();
+      r_c.x = c.x;
+      r_c.y = c.y;
+      r_c.z = c.z;
+      r_c.roll = c.roll;
+      r_c.pitch = c.pitch;
+      r_c.yaw = c.yaw;
+      // A5b: leave r_c.r_u unchanged (Slam_radius_only_callback owns it).
+      mutex_robot_state.unlock();
+      // A6: re-arm radius acceptance after coordinated reset / cold start.
+      // Only reached for Odometry with stamp >= radius_reset_stamp_ (if set).
+      if (!radius_feedback_armed_) {
+        radius_feedback_armed_ = true;
+        RCLCPP_INFO(
+          this->get_logger(),
+          "Radius feedback re-armed after accepted post-reset Odometry");
+      }
+    }
+  }
   //----------------------------------------------------
   void ControlQuad::Frame_callback(const interfaces::msg::Frame & msg) 
 {

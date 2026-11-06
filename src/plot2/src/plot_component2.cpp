@@ -1,10 +1,15 @@
 #include "plot_component2.hpp"
+#include "plot_frame_conversions.hpp"
 #include "../../common/Transforms/quat2R.hpp"
 #include "../../common/Transforms/Euler_to_Ra2b.hpp"
-#include <cv_bridge/cv_bridge.h>
+#include <cv_bridge/cv_bridge.hpp>
 #include <opencv2/imgproc.hpp>
 #include <opencv2/imgcodecs.hpp>
+#include <tf2/LinearMath/Matrix3x3.h>
+#include <tf2/LinearMath/Quaternion.h>
 #include <chrono>
+#include <cstring>
+#include <algorithm>
 
 #define STB_IMAGE_WRITE_IMPLEMENTATION
 
@@ -19,32 +24,42 @@ namespace plot2
 static void glfw_error_callback(int error, const char* description)
 {
     fprintf(stderr, "GLFW Error %d: %s\n", error, description);
-} 
+}
 
-
-
-// Create a Talker "component" that subclasses the generic rclcpp::Node base class.
-// Components get built into shared libraries and as such do not write their own main functions.
-// The process using the component's shared library will instantiate the class as a ROS node.
 PLOTscene2::PLOTscene2(const rclcpp::NodeOptions & options)
 : Node("PLOTscene", options)
-{ 
-
+{
   setParameters();
-  // Set subscribers
-  sub_Frame_ = this->create_subscription<interfaces::msg::Frame>("Frame_topic", 10, std::bind(&PLOTscene2::Frame_callback, this, _1)); 
-  sub_lslam_data_ = this->create_subscription<interfaces::msg::Lslam>("lslam_data_topic", 10, std::bind(&PLOTscene2::lslam_data_callback, this, _1)); 
-  // sub_gmap_data_ = this->create_subscription<interfaces::msg::Gmap>("gmap_data_topic",10,std::bind(&PLOTscene2::gmap_data_callback, this, _1));
-  sub_Gps_ = this->create_subscription<geometry_msgs::msg::PointStamped>("GT_topic", 10, std::bind(&PLOTscene2::GT_callback, this, _1));
-  
-  
+
+  // Standard pose / trajectory / landmarks (public odom parent).
+  sub_Odom_ = this->create_subscription<nav_msgs::msg::Odometry>(
+    "odometry", 10, std::bind(&PLOTscene2::Odometry_callback, this, _1));
+  sub_Path_ = this->create_subscription<nav_msgs::msg::Path>(
+    "path", 10, std::bind(&PLOTscene2::Path_callback, this, _1));
+  sub_Landmarks_ = this->create_subscription<sensor_msgs::msg::PointCloud2>(
+    "landmarks", 10, std::bind(&PLOTscene2::Landmarks_callback, this, _1));
+
+  // Custom: camera frame + image-feature overlays / radius; GT.
+  sub_Frame_ = this->create_subscription<interfaces::msg::Frame>(
+    "Frame_topic", 10, std::bind(&PLOTscene2::Frame_callback, this, _1));
+  sub_lslam_data_ = this->create_subscription<interfaces::msg::Lslam>(
+    "lslam_data_topic", 10, std::bind(&PLOTscene2::lslam_data_callback, this, _1));
+  sub_Gps_ = this->create_subscription<geometry_msgs::msg::PointStamped>(
+    "GT_topic", 10, std::bind(&PLOTscene2::GT_callback, this, _1));
+
+  srv_plot_ = this->create_service<interfaces::srv::SimpleServ>(
+    "plot_service",
+    std::bind(&PLOTscene2::Handle_plot_service, this, _1, _2));
+
   running_ = true;
   lslamstarted_ = false;
-  plot_loop_ = thread(&PLOTscene2::PLOT_LOOP,this);
+  plot_loop_ = thread(&PLOTscene2::PLOT_LOOP, this);
   distance_traveled_xy = 0;
 
-  
-
+  RCLCPP_INFO(
+    this->get_logger(),
+    "Plot2: odometry/path/landmarks (standard) + Frame/Lslam-features/GT (custom); "
+    "plot_service for keyboard view/zoom/clear/screenshot");
 }
 
 //--------------------------------------------------------------------------
@@ -104,6 +119,8 @@ void PLOTscene2::PLOT_LOOP()
             ImGui_ImplOpenGL3_NewFrame();
             ImGui_ImplGlfw_NewFrame();
             ImGui::NewFrame();
+
+            apply_clear_if_requested();
 
             draw_plot(poses,gt,feats,anchors);
             draw_plot_xz(poses,gt,feats,anchors);
@@ -167,153 +184,177 @@ void PLOTscene2::PLOT_LOOP()
 
 
 
-void  PLOTscene2::lslam_data_callback(const interfaces::msg::Lslam & msg) 
+void PLOTscene2::Odometry_callback(const nav_msgs::msg::Odometry & msg)
 {
-  if(!lslamstarted_)lslamstarted_ = true;
-  
-  // Define your minimum Euclidean distance threshold
-  const double MIN_DISTANCE = 0.2; // Adjust this value as needed (e.g., 0.1 meters)
-  
-  double quat[4];
-  quat[0] = msg.n2r.rotation.w;
-  quat[1] = msg.n2r.rotation.x;
-  quat[2] = msg.n2r.rotation.y;
-  quat[3] = msg.n2r.rotation.z;  
-  double Rn2r_a[9];
-  quat2R_row_major(quat,Rn2r_a);
+  if (!lslamstarted_) {
+    lslamstarted_ = true;
+  }
+  const auto & p = msg.pose.pose.position;
+  const auto & q = msg.pose.pose.orientation;
+  const auto & v = msg.twist.twist.linear;
 
-  // Wrap raw array into Armadillo matrix
-  //arma::mat Rn2r(Rn2r_a, 3, 3, false); // false = don't copy, use external memory (like cv::Mat)
-  // Define identity matrix Rb
-  // arma::mat Rb = arma::eye<arma::mat>(3, 3);
-  // Transpose to get Rr2n
-  // arma::mat Rr2n = Rn2r.t();
-  // Translation vector t_r
-  arma::vec3 t_r = {
-      msg.n2r.translation.x,
-      msg.n2r.translation.y,
-      msg.n2r.translation.z};
+  tf2::Quaternion tq(q.x, q.y, q.z, q.w);
+  double roll = 0.0, pitch = 0.0, yaw = 0.0;
+  tf2::Matrix3x3(tq).getRPY(roll, pitch, yaw);
 
-    
-    { // lock block
-        std::lock_guard<std::mutex> lock(data_mutex_);
-        
-        RobotState_.position = t_r;
-        RobotState_.orientation = {
-            msg.robot_state[1],
-            msg.robot_state[2],
-            msg.robot_state[3],
-        };
-        RobotState_.velocity = {
-            msg.robot_state[10],
-            msg.robot_state[11],
-            msg.robot_state[12],
-        };
+  std::lock_guard<std::mutex> lock(data_mutex_);
+  RobotState_.position = {p.x, p.y, p.z};
+  RobotState_.orientation = {roll, pitch, yaw};
+  RobotState_.velocity = {v.x, v.y, v.z};
+}
 
-        // Only emplace the position if the Euclidean distance to the last position is above the threshold
-        if (positions_.empty() || arma::norm(t_r - positions_.back(), 2) >= MIN_DISTANCE) {
-            positions_.emplace_back(t_r);
-        }
-        
-        mapFeat_.clear();
-        mapAnchor_.clear();
-        for(int i = 0; i < msg.map_state.size();i++)
-        { 
-        arma::vec3 featPoint = {
-        msg.map_state[i].x,
-        msg.map_state[i].y,
-        msg.map_state[i].z};  
-        mapFeat_.emplace_back(featPoint);      
-        }
-        for(int i = 0; i < msg.map_anchors.size();i++)
-        { 
-        arma::vec3 anchorPoint = {
-        msg.map_anchors[i].x,
-        msg.map_anchors[i].y,
-        msg.map_anchors[i].z};  
-        mapAnchor_.emplace_back(anchorPoint);        
-        }
-    }
-    
-    img_matched_feats_.clear();
-    img_unmatched_feats_.clear();
-    img_matched_anchors_.clear();
-    img_unmatched_anchors_.clear();  
-    
-    std::lock_guard<std::mutex> lock(frame_mutex_);
-    for(int i = 0; i < msg.matched_img_feats.size();i++)
-      { 
-        arma::vec2 pt = {
-            msg.matched_img_feats[i].x,
-            msg.matched_img_feats[i].y
-        };        
-        img_matched_feats_.push_back(pt);      
-      } 
-      for(int i = 0; i < msg.unmatched_img_feats.size();i++)
-      {
-        arma::vec2 pt = {
-            msg.unmatched_img_feats[i].x,
-            msg.unmatched_img_feats[i].y
-        };        
-        img_unmatched_feats_.push_back(pt);         
+void PLOTscene2::Path_callback(const nav_msgs::msg::Path & msg)
+{
+  std::lock_guard<std::mutex> lock(data_mutex_);
+  positions_.clear();
+  positions_.reserve(msg.poses.size());
+  for (const auto & ps : msg.poses) {
+    positions_.emplace_back(arma::vec3({
+      ps.pose.position.x, ps.pose.position.y, ps.pose.position.z}));
+  }
+}
+
+void PLOTscene2::Landmarks_callback(const sensor_msgs::msg::PointCloud2 & msg)
+{
+  std::vector<arma::vec3> pts;
+  if (msg.point_step >= 12 && msg.width > 0 && !msg.data.empty()) {
+    pts.reserve(msg.width);
+    for (uint32_t i = 0; i < msg.width; ++i) {
+      const size_t off = static_cast<size_t>(i) * msg.point_step;
+      if (off + 12 > msg.data.size()) {
+        break;
       }
-      for(int i = 0; i < msg.matched_img_anchors.size();i++)
-      { 
-        arma::vec2 pt = {
-            msg.matched_img_anchors[i].x,
-            msg.matched_img_anchors[i].y
-        };        
-        img_matched_anchors_.push_back(pt);            
-      } 
-      for(int i = 0; i < msg.unmatched_img_anchors.size();i++)
-      { 
-        arma::vec2 pt = {
-            msg.unmatched_img_anchors[i].x,
-            msg.unmatched_img_anchors[i].y
-        };        
-        img_unmatched_anchors_.push_back(pt);              
-      }  
-    
+      float xyz[3];
+      std::memcpy(xyz, msg.data.data() + off, 12);
+      if (std::isfinite(xyz[0]) && std::isfinite(xyz[1]) && std::isfinite(xyz[2])) {
+        pts.emplace_back(arma::vec3({xyz[0], xyz[1], xyz[2]}));
+      }
+    }
+  }
+  std::lock_guard<std::mutex> lock(data_mutex_);
+  mapFeat_ = std::move(pts);
+  mapAnchor_.clear();  // cloud merges feats+anchors; color split not available
+}
 
+void PLOTscene2::lslam_data_callback(const interfaces::msg::Lslam & msg)
+{
+  // Custom-only: image feature overlays + radius. Pose/map/path owned by standard topics.
+  {
+    std::lock_guard<std::mutex> lock(data_mutex_);
+    radius_uncertainty_ = msg.radius_uncertainty;
+  }
+
+  std::lock_guard<std::mutex> lock(frame_mutex_);
+  img_matched_feats_.clear();
+  img_unmatched_feats_.clear();
+  img_matched_anchors_.clear();
+  img_unmatched_anchors_.clear();
+  for (size_t i = 0; i < msg.matched_img_feats.size(); ++i) {
+    img_matched_feats_.push_back({msg.matched_img_feats[i].x, msg.matched_img_feats[i].y});
+  }
+  for (size_t i = 0; i < msg.unmatched_img_feats.size(); ++i) {
+    img_unmatched_feats_.push_back({msg.unmatched_img_feats[i].x, msg.unmatched_img_feats[i].y});
+  }
+  for (size_t i = 0; i < msg.matched_img_anchors.size(); ++i) {
+    img_matched_anchors_.push_back({msg.matched_img_anchors[i].x, msg.matched_img_anchors[i].y});
+  }
+  for (size_t i = 0; i < msg.unmatched_img_anchors.size(); ++i) {
+    img_unmatched_anchors_.push_back({msg.unmatched_img_anchors[i].x, msg.unmatched_img_anchors[i].y});
+  }
+}
+
+void PLOTscene2::Handle_plot_service(
+  const std::shared_ptr<interfaces::srv::SimpleServ::Request> request,
+  std::shared_ptr<interfaces::srv::SimpleServ::Response> response)
+{
+  const int8_t cmd = request->cmd;
+  {
+    std::lock_guard<std::mutex> lock(view_mutex_);
+    const float pan_step = 20.0f;
+    const float scale_speed = 1.1f;
+    if (cmd == 45) {  // '-'
+      view_scale_ = std::clamp(view_scale_ / scale_speed, 1.0f, 1000.0f);
+    } else if (cmd == 43) {  // '+'
+      view_scale_ = std::clamp(view_scale_ * scale_speed, 1.0f, 1000.0f);
+    } else if (cmd == '1') {
+      active_view_ = 1;
+    } else if (cmd == '2') {
+      active_view_ = 2;
+    } else if (cmd == '3') {
+      active_view_ = 3;
+    } else if (cmd == '8') {  // view up
+      if (active_view_ == 1) { pan_xy_.y -= pan_step; }
+      else if (active_view_ == 2) { pan_xz_.y -= pan_step; }
+      else { pan_zy_.y -= pan_step; }
+    } else if (cmd == '5') {  // view down
+      if (active_view_ == 1) { pan_xy_.y += pan_step; }
+      else if (active_view_ == 2) { pan_xz_.y += pan_step; }
+      else { pan_zy_.y += pan_step; }
+    } else if (cmd == '4') {  // view left
+      if (active_view_ == 1) { pan_xy_.x -= pan_step; }
+      else if (active_view_ == 2) { pan_xz_.x -= pan_step; }
+      else { pan_zy_.x -= pan_step; }
+    } else if (cmd == '6') {  // view right
+      if (active_view_ == 1) { pan_xy_.x += pan_step; }
+      else if (active_view_ == 2) { pan_xz_.x += pan_step; }
+      else { pan_zy_.x += pan_step; }
+    } else if (cmd == '7' || cmd == 'c') {
+      clear_request_ = true;
+    } else if (cmd == '9') {
+      capture_frames_ = true;
+    }
+  }
+  response->response = true;
+}
+
+void PLOTscene2::apply_clear_if_requested()
+{
+  bool clear = false;
+  {
+    std::lock_guard<std::mutex> lock(view_mutex_);
+    if (clear_request_) {
+      clear = true;
+      clear_request_ = false;
+      pan_xy_ = ImVec2(0, 0);
+      pan_xz_ = ImVec2(0, 0);
+      pan_zy_ = ImVec2(0, 0);
+      view_scale_ = 10.0f;
+    }
+  }
+  if (!clear) {
+    return;
+  }
+  std::lock_guard<std::mutex> lock(data_mutex_);
+  positions_.clear();
+  gt_.clear();
+  mapFeat_.clear();
+  mapAnchor_.clear();
+  distance_traveled_xy = 0;
+  lslamstarted_ = false;
 }
 
 void PLOTscene2::GT_callback(const geometry_msgs::msg::PointStamped & msg)
   { 
-    static double x0, y0, z0;
-    static bool init = false;
+    // GT_topic is already public odom parent, origin-aligned at the bridge
+    // (R_z(-yaw0)*(p-p0) + D*Robot_init). Do not subtract another origin or
+    // apply D / attitude transforms — that would erase configured Robot_init.
+    const double MIN_DISTANCE = 0.2;
+    const double x = msg.point.x;
+    const double y = msg.point.y;
+    const double z = msg.point.z;
 
-    // Define your minimum Euclidean distance threshold
-    const double MIN_DISTANCE = 0.2; // Adjust this value as needed (e.g., 0.1 meters)
-
-    double x = msg.point.x;
-    double y = msg.point.y;
-    double z = msg.point.z;
-
-    if(lslamstarted_ == true)
-    { 
-        if (init == false)
-        {
-            init = true;
-            x0 = x;
-            y0 = y;
-            z0 = z;
-        }
-        else{    
-            std::lock_guard<std::mutex> lock(data_mutex_);
-            arma::vec3 t_r = {
-                            x - x0,
-                            y - y0,
-                            z - z0};
-            RobotStateGT_.position = t_r;
-            // Only emplace the position if the Euclidean distance to the last position is above the threshold
-            if (gt_.empty() || arma::norm(t_r - gt_.back(), 2) >= MIN_DISTANCE) {
-                gt_.emplace_back(t_r);
-                distance_traveled_xy += computeXYDistance(gt_[gt_.size() - 2], gt_.back());     
-                }          
-                 
-        }
-    }  
-
+    if (!lslamstarted_) {
+      return;
+    }
+    std::lock_guard<std::mutex> lock(data_mutex_);
+    arma::vec3 t_r = {x, y, z};
+    RobotStateGT_.position = t_r;
+    if (gt_.empty() || arma::norm(t_r - gt_.back(), 2) >= MIN_DISTANCE) {
+      gt_.emplace_back(t_r);
+      if (gt_.size() >= 2) {
+        distance_traveled_xy += computeXYDistance(gt_[gt_.size() - 2], gt_.back());
+      }
+    }
   }
 
 //------------------------------------------------------------------------------------------------------    
@@ -491,8 +532,13 @@ void PLOTscene2::draw_plot(const std::vector<arma::vec3>& positions_, const std:
     ImVec2 canvas_end = ImVec2(canvas_pos.x + canvas_size.x, canvas_pos.y + canvas_size.y);
     ImDrawList* draw_list = ImGui::GetWindowDrawList();
 
-    static float scale = 10.0f;
-    static ImVec2 pan_offset = ImVec2(0, 0);
+    float scale = 10.0f;
+    ImVec2 pan_offset = ImVec2(0, 0);
+    {
+      std::lock_guard<std::mutex> lock(view_mutex_);
+      scale = view_scale_;
+      pan_offset = pan_xy_;
+    }
     static bool is_panning = false;
     static ImVec2 last_mouse_pos;
     const float scale_speed = 1.1f;
@@ -504,8 +550,10 @@ void PLOTscene2::draw_plot(const std::vector<arma::vec3>& positions_, const std:
     if (is_hovered) {
         float wheel = ImGui::GetIO().MouseWheel;
         if (wheel != 0.0f) {
-            scale *= (wheel > 0.0f) ? scale_speed : (1.0f / scale_speed);
-            scale = std::clamp(scale, 1.0f, 1000.0f);
+            std::lock_guard<std::mutex> lock(view_mutex_);
+            view_scale_ *= (wheel > 0.0f) ? scale_speed : (1.0f / scale_speed);
+            view_scale_ = std::clamp(view_scale_, 1.0f, 1000.0f);
+            scale = view_scale_;
         }
     }
 
@@ -516,8 +564,12 @@ void PLOTscene2::draw_plot(const std::vector<arma::vec3>& positions_, const std:
 
     if (is_panning && ImGui::IsMouseDown(ImGuiMouseButton_Left)) {
         ImVec2 delta = ImVec2(mouse_pos.x - last_mouse_pos.x, mouse_pos.y - last_mouse_pos.y);
-        pan_offset.x += delta.x;
-        pan_offset.y += delta.y;
+        {
+          std::lock_guard<std::mutex> lock(view_mutex_);
+          pan_xy_.x += delta.x;
+          pan_xy_.y += delta.y;
+          pan_offset = pan_xy_;
+        }
         last_mouse_pos = mouse_pos;
     } else {
         is_panning = false;
@@ -528,18 +580,19 @@ void PLOTscene2::draw_plot(const std::vector<arma::vec3>& positions_, const std:
     ImVec2 center = ImVec2(canvas_pos.x + canvas_size.x * 0.5f + pan_offset.x,
                            canvas_pos.y + canvas_size.y * 0.5f + pan_offset.y);
 
-    // Coordinate transform
+    // Top XY from above: +X right, +Y up (look toward -Z).
     auto world_to_screen = [&](const arma::vec3& pt) -> ImVec2 {
-        float plot_x = pt(1);        // robot Y → plot X
-        float plot_y = -pt(0);       // robot X → plot Y (inverted)
-        return ImVec2(center.x + plot_x * scale,
-                      center.y + plot_y * scale);
+        double sx = 0.0, sy = 0.0;
+        frames::public_xy_to_screen(
+          pt(0), pt(1), center.x, center.y, scale, sx, sy);
+        return ImVec2(static_cast<float>(sx), static_cast<float>(sy));
     };
 
     auto screen_to_world = [&](const ImVec2& screen) -> arma::vec3 {
-        float dx = (screen.x - center.x) / scale;
-        float dy = (screen.y - center.y) / scale;
-        return arma::vec3({ -dy, dx, 0.0 });  // Inverse of world_to_screen
+        double dx = 0.0, dy = 0.0;
+        frames::screen_to_public_xy(
+          screen.x, screen.y, center.x, center.y, scale, dx, dy);
+        return arma::vec3({dx, dy, 0.0});
     };
 
     // ───── Draw Grid ─────
@@ -635,25 +688,27 @@ void PLOTscene2::draw_plot(const std::vector<arma::vec3>& positions_, const std:
     }
 
     
-    // ───── Draw Coordinate Frame ─────
-    const float lc = 5.0f; // 1 meter grid
-    // X-axis
-    ImVec2 x_axis_start = world_to_screen(arma::vec3{0.0, 0.0, 0.0});  // Origin
-    ImVec2 x_axis_end = world_to_screen(arma::vec3{lc, 0.0, 0.0});    // 10 units along X
-    draw_list->AddLine(x_axis_start, x_axis_end, IM_COL32(0, 255, 0, 255), 1.0f);  // Red for X axis
+    // ───── Draw Coordinate Frame (public odom; from above: +X right, +Y up) ─────
+    const float lc = 5.0f;
+    ImVec2 x_axis_start = world_to_screen(arma::vec3{0.0, 0.0, 0.0});
+    ImVec2 x_axis_end = world_to_screen(arma::vec3{lc, 0.0, 0.0});
+    draw_list->AddLine(x_axis_start, x_axis_end, IM_COL32(0, 255, 0, 255), 1.0f);
 
-    // Y-axis
-    ImVec2 y_axis_start = world_to_screen(arma::vec3{0, 0, 0});  // Origin
-    ImVec2 y_axis_end = world_to_screen(arma::vec3{0, lc, 0});    // 10 units along Y
-    draw_list->AddLine(y_axis_start, y_axis_end, IM_COL32(0, 255, 0, 255), 1.0f);  // Green for Y axis
+    ImVec2 y_axis_start = world_to_screen(arma::vec3{0, 0, 0});
+    ImVec2 y_axis_end = world_to_screen(arma::vec3{0, lc, 0});
+    draw_list->AddLine(y_axis_start, y_axis_end, IM_COL32(0, 255, 0, 255), 1.0f);
 
-    // X-axis label
-    ImVec2 x_label_pos = world_to_screen(arma::vec3{lc, 0, 0}); // Position label at X axis end
-    draw_list->AddText(x_label_pos, IM_COL32(0, 255, 0, 255), "X");
+    draw_list->AddText(x_axis_end, IM_COL32(0, 255, 0, 255), "+X");
+    draw_list->AddText(y_axis_end, IM_COL32(0, 255, 0, 255), "+Y");
 
-    // Y-axis label
-    ImVec2 y_label_pos = world_to_screen(arma::vec3{0, lc, 0}); // Position label at Y axis end
-    draw_list->AddText(y_label_pos, IM_COL32(0, 255, 0, 255), "Y");
+    draw_list->AddText(
+      ImVec2(canvas_pos.x + 8.0f, canvas_pos.y + 8.0f),
+      IM_COL32(40, 40, 40, 220),
+      "Top XY (public): +X right, +Y up; view from +Z");
+    draw_list->AddText(
+      ImVec2(canvas_pos.x + 8.0f, canvas_pos.y + 24.0f),
+      IM_COL32(40, 40, 40, 200),
+      "Match Webots with world +X right and +Y up in the viewport");
 
     ImGui::End();
     ImGui::PopStyleVar();
@@ -680,10 +735,15 @@ void PLOTscene2::draw_plot_xz(const std::vector<arma::vec3>& positions_, const s
     ImVec2 canvas_end = ImVec2(canvas_pos.x + canvas_size.x, canvas_pos.y + canvas_size.y);
     ImDrawList* draw_list = ImGui::GetWindowDrawList();
 
-    static float scale = 10.0f;
-    static ImVec2 pan_offset = ImVec2(0, 0);
-    static bool is_panning = false;
-    static ImVec2 last_mouse_pos;
+    float scale = 10.0f;
+    ImVec2 pan_offset = ImVec2(0, 0);
+    {
+      std::lock_guard<std::mutex> lock(view_mutex_);
+      scale = view_scale_;
+      pan_offset = pan_xz_;
+    }
+    static bool is_panning_xz = false;
+    static ImVec2 last_mouse_pos_xz;
     const float scale_speed = 1.1f;
 
     ImGui::InvisibleButton("canvas_xz", canvas_size,
@@ -694,23 +754,29 @@ void PLOTscene2::draw_plot_xz(const std::vector<arma::vec3>& positions_, const s
     if (is_hovered) {
         float wheel = ImGui::GetIO().MouseWheel;
         if (wheel != 0.0f) {
-            scale *= (wheel > 0.0f) ? scale_speed : (1.0f / scale_speed);
-            scale = std::clamp(scale, 1.0f, 1000.0f);
+            std::lock_guard<std::mutex> lock(view_mutex_);
+            view_scale_ *= (wheel > 0.0f) ? scale_speed : (1.0f / scale_speed);
+            view_scale_ = std::clamp(view_scale_, 1.0f, 1000.0f);
+            scale = view_scale_;
         }
     }
 
     if (is_hovered && ImGui::IsMouseClicked(ImGuiMouseButton_Left)) {
-        is_panning = true;
-        last_mouse_pos = mouse_pos;
+        is_panning_xz = true;
+        last_mouse_pos_xz = mouse_pos;
     }
 
-    if (is_panning && ImGui::IsMouseDown(ImGuiMouseButton_Left)) {
-        ImVec2 delta = ImVec2(mouse_pos.x - last_mouse_pos.x, mouse_pos.y - last_mouse_pos.y);
-        pan_offset.x += delta.x;
-        pan_offset.y -= delta.y;
-        last_mouse_pos = mouse_pos;
+    if (is_panning_xz && ImGui::IsMouseDown(ImGuiMouseButton_Left)) {
+        ImVec2 delta = ImVec2(mouse_pos.x - last_mouse_pos_xz.x, mouse_pos.y - last_mouse_pos_xz.y);
+        {
+          std::lock_guard<std::mutex> lock(view_mutex_);
+          pan_xz_.x += delta.x;
+          pan_xz_.y -= delta.y;
+          pan_offset = pan_xz_;
+        }
+        last_mouse_pos_xz = mouse_pos;
     } else {
-        is_panning = false;
+        is_panning_xz = false;
     }
 
     draw_list->AddRectFilled(canvas_pos, canvas_end, IM_COL32(255, 255, 255, 255));
@@ -718,18 +784,19 @@ void PLOTscene2::draw_plot_xz(const std::vector<arma::vec3>& positions_, const s
     ImVec2 center = ImVec2(canvas_pos.x + canvas_size.x * 0.5f + pan_offset.x,
                            canvas_pos.y + canvas_size.y * 0.5f - pan_offset.y);
 
-    // Coordinate transform for X-Z view
+    // Public +up X–Z → ImGui (screen Y down): +Z must decrease screen_y.
     auto world_to_screen = [&](const arma::vec3& pt) -> ImVec2 {
-        float plot_x = pt(0);         // robot X → plot X
-        float plot_y = pt(2);        // robot Z → plot Y (inverted so up is up)
-        return ImVec2(center.x + plot_x * scale,
-                      center.y + plot_y * scale);
+        double sx = 0.0, sy = 0.0;
+        frames::public_xz_to_screen(
+          pt(0), pt(2), center.x, center.y, scale, sx, sy);
+        return ImVec2(static_cast<float>(sx), static_cast<float>(sy));
     };
 
     auto screen_to_world = [&](const ImVec2& screen) -> arma::vec3 {
-        float dx = (screen.x - center.x) / scale;
-        float dz = (screen.y - center.y) / scale; 
-        return arma::vec3({ dx, 0.0, dz });  // only X and Z matter here
+        double dx = 0.0, dz = 0.0;
+        frames::screen_to_public_xz(
+          screen.x, screen.y, center.x, center.y, scale, dx, dz);
+        return arma::vec3({dx, 0.0, dz});
     };
 
     // ───── Draw Grid ─────
@@ -814,8 +881,8 @@ void PLOTscene2::draw_plot_xz(const std::vector<arma::vec3>& positions_, const s
     ImVec2 x_axis_end = world_to_screen(arma::vec3({2.0, 0.0, 0.0}));
     ImVec2 z_axis_end = world_to_screen(arma::vec3({0.0, 0.0, 2.0}));
 
-    draw_list->AddLine(origin_o, x_axis_end, IM_COL32(0, 255, 0, 255), 1.5f); // X axis
-    draw_list->AddLine(origin_o, z_axis_end, IM_COL32(0, 255, 0, 255), 1.5f); // Z axis
+    draw_list->AddLine(origin_o, x_axis_end, IM_COL32(0, 255, 0, 255), 1.5f); // +X right
+    draw_list->AddLine(origin_o, z_axis_end, IM_COL32(0, 255, 0, 255), 1.5f); // +Z up
 
     draw_list->AddText(ImVec2(x_axis_end.x + 5, x_axis_end.y), IM_COL32(0, 255, 0, 255), "x");
     draw_list->AddText(ImVec2(z_axis_end.x + 5, z_axis_end.y), IM_COL32(0, 255, 0, 255), "z");
@@ -845,10 +912,15 @@ void PLOTscene2::draw_plot_zy(const std::vector<arma::vec3>& positions_, const s
     ImVec2 canvas_end = ImVec2(canvas_pos.x + canvas_size.x, canvas_pos.y + canvas_size.y);
     ImDrawList* draw_list = ImGui::GetWindowDrawList();
 
-    static float scale = 10.0f;
-    static ImVec2 pan_offset = ImVec2(0, 0);
-    static bool is_panning = false;
-    static ImVec2 last_mouse_pos;
+    float scale = 10.0f;
+    ImVec2 pan_offset = ImVec2(0, 0);
+    {
+      std::lock_guard<std::mutex> lock(view_mutex_);
+      scale = view_scale_;
+      pan_offset = pan_zy_;
+    }
+    static bool is_panning_zy = false;
+    static ImVec2 last_mouse_pos_zy;
     const float scale_speed = 1.1f;
 
     ImGui::InvisibleButton("canvas_zy", canvas_size,
@@ -859,23 +931,29 @@ void PLOTscene2::draw_plot_zy(const std::vector<arma::vec3>& positions_, const s
     if (is_hovered) {
         float wheel = ImGui::GetIO().MouseWheel;
         if (wheel != 0.0f) {
-            scale *= (wheel > 0.0f) ? scale_speed : (1.0f / scale_speed);
-            scale = std::clamp(scale, 1.0f, 1000.0f);
+            std::lock_guard<std::mutex> lock(view_mutex_);
+            view_scale_ *= (wheel > 0.0f) ? scale_speed : (1.0f / scale_speed);
+            view_scale_ = std::clamp(view_scale_, 1.0f, 1000.0f);
+            scale = view_scale_;
         }
     }
 
     if (is_hovered && ImGui::IsMouseClicked(ImGuiMouseButton_Left)) {
-        is_panning = true;
-        last_mouse_pos = mouse_pos;
+        is_panning_zy = true;
+        last_mouse_pos_zy = mouse_pos;
     }
 
-    if (is_panning && ImGui::IsMouseDown(ImGuiMouseButton_Left)) {
-        ImVec2 delta = ImVec2(mouse_pos.x - last_mouse_pos.x, mouse_pos.y - last_mouse_pos.y);
-        pan_offset.x += delta.x;
-        pan_offset.y -= delta.y;
-        last_mouse_pos = mouse_pos;
+    if (is_panning_zy && ImGui::IsMouseDown(ImGuiMouseButton_Left)) {
+        ImVec2 delta = ImVec2(mouse_pos.x - last_mouse_pos_zy.x, mouse_pos.y - last_mouse_pos_zy.y);
+        {
+          std::lock_guard<std::mutex> lock(view_mutex_);
+          pan_zy_.x += delta.x;
+          pan_zy_.y -= delta.y;
+          pan_offset = pan_zy_;
+        }
+        last_mouse_pos_zy = mouse_pos;
     } else {
-        is_panning = false;
+        is_panning_zy = false;
     }
 
     draw_list->AddRectFilled(canvas_pos, canvas_end, IM_COL32(255, 255, 255, 255));
@@ -883,17 +961,18 @@ void PLOTscene2::draw_plot_zy(const std::vector<arma::vec3>& positions_, const s
     ImVec2 center = ImVec2(canvas_pos.x + canvas_size.x * 0.5f + pan_offset.x,
                            canvas_pos.y + canvas_size.y * 0.5f - pan_offset.y);
 
-    // Z-Y view: invert Z and Y
+    // Public +up Z–Y → ImGui: +Y right, +Z up (screen_y -= z_pub).
     auto world_to_screen = [&](const arma::vec3& pt) -> ImVec2 {
-        float plot_x = pt(1);  // Y inverted
-        float plot_y = pt(2);   // Z normal
-        return ImVec2(center.x + plot_x * scale,
-                      center.y + plot_y * scale);
+        double sx = 0.0, sy = 0.0;
+        frames::public_zy_to_screen(
+          pt(1), pt(2), center.x, center.y, scale, sx, sy);
+        return ImVec2(static_cast<float>(sx), static_cast<float>(sy));
     };
 
     auto screen_to_world = [&](const ImVec2& screen) -> arma::vec3 {
-        float dy = -(screen.x - center.x) / scale;
-        float dz = (screen.y - center.y) / scale;
+        double dy = 0.0, dz = 0.0;
+        frames::screen_to_public_zy(
+          screen.x, screen.y, center.x, center.y, scale, dy, dz);
         return arma::vec3({0.0, dy, dz});
     };
 
@@ -956,8 +1035,8 @@ void PLOTscene2::draw_plot_zy(const std::vector<arma::vec3>& positions_, const s
     ImVec2 z_axis_end = world_to_screen(arma::vec3({0.0, 0.0, 2.0}));
     ImVec2 y_axis_end = world_to_screen(arma::vec3({0.0, 2.0, 0.0}));
 
-    draw_list->AddLine(origin_o, z_axis_end, IM_COL32(0, 255, 0, 255), 1.5f); // Z
-    draw_list->AddLine(origin_o, y_axis_end, IM_COL32(0, 255, 0, 255), 1.5f); // Y (inverted)
+    draw_list->AddLine(origin_o, z_axis_end, IM_COL32(0, 255, 0, 255), 1.5f); // +Z up
+    draw_list->AddLine(origin_o, y_axis_end, IM_COL32(0, 255, 0, 255), 1.5f); // +Y right
 
     draw_list->AddText({z_axis_end.x + 5, z_axis_end.y}, IM_COL32(0, 255, 0, 255), "z");
     draw_list->AddText({y_axis_end.x + 5, y_axis_end.y}, IM_COL32(0, 255, 0, 255), "y");
@@ -1051,9 +1130,10 @@ void PLOTscene2::draw_quad(const RobotState &robotState_, const RobotState &robo
 
 
     // Orientation
-    float roll  = -robotState_.orientation(0);
+    // Public-odom RPY from nav_msgs/Odometry (A2 frame).
+    float roll  = robotState_.orientation(0);
     float pitch = robotState_.orientation(1);
-    float yaw   = -robotState_.orientation(2);
+    float yaw   = robotState_.orientation(2);
 
     // Format strings with angle values in degrees
     auto rad2deg = [](float rad) { return rad * 180.0f / float(M_PI); };
@@ -1113,13 +1193,17 @@ void PLOTscene2::draw_quad(const RobotState &robotState_, const RobotState &robo
     ImGui::EndTable();
     }
 
-    // Optional: Add distance error
+    // Approximate: latest Est vs latest GT samples (not stamp-matched).
     arma::vec3 err = robotState_.position - robotStateGT_.position;
     double dist = arma::norm(err);
-    ImGui::TextColored(ImVec4(1.0f, 0.5f, 0.5f, 1.0f), "Position Error: %.3f m", dist);
+    ImGui::TextColored(
+      ImVec4(1.0f, 0.5f, 0.5f, 1.0f),
+      "Position Error (approx., not time-matched): %.3f m", dist);
 
     ImGui::TextColored(ImVec4(0.7f, 0.9f, 0.7f, 1.0f), "Distance Traveled (XY): %.3f m", distance_traveled_xy);
-
+    ImGui::Text("Radius uncertainty (custom Lslam): %.3f m", radius_uncertainty_);
+    ImGui::TextDisabled(
+      "Frame: odom parent (public +up); GT epoch-aligned at bridge (no 2nd origin)");
 
     ImGui::End();
     ImGui::PopStyleVar();
@@ -1156,14 +1240,9 @@ void PLOTscene2::save_screen_shoot(){
 }
 
 void PLOTscene2::setParameters()
-{  
-
-   //  Declare node parameters (and default values)
-   this->declare_parameter<string>("label_logs", "CONF" );
-
-   this->get_parameter("label_logs",label_logs);
-
-
+{
+   this->declare_parameter<string>("label_logs", "CONF");
+   this->get_parameter("label_logs", label_logs);
 }
 
 
