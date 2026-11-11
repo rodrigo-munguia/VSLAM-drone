@@ -6,6 +6,7 @@ find_package(ament_cmake REQUIRED)
 # Experiment resources (resolved via ament index; cwd-independent)
 install(FILES
   ${CMAKE_CURRENT_SOURCE_DIR}/../../control_plan.txt
+  ${CMAKE_CURRENT_SOURCE_DIR}/../../control_plan_g6b.txt
   DESTINATION share/${PROJECT_NAME}
 )
 

@@ -20,6 +20,13 @@
 #include "std_msgs/msg/string.hpp"
 
 #include "interfaces/srv/simple_serv.hpp"
+#include "interfaces/srv/correction_coordinate.hpp"
+#include "g6_coord_policy.hpp"
+#include "g6_feedback_barrier.hpp"
+#include <atomic>
+#include <chrono>
+#include <condition_variable>
+#include <deque>
 #include "interfaces/msg/alt.hpp"
 #include "interfaces/msg/att.hpp"
 #include "interfaces/msg/frame.hpp"
@@ -29,6 +36,10 @@
 #include "interfaces/msg/ododiff.hpp"
 #include "interfaces/msg/odovw.hpp"
 #include "interfaces/msg/robotstate.hpp"
+#include "interfaces/msg/correction_applied.hpp"
+#include "interfaces/msg/global_loop_committed.hpp"
+#include "interfaces/msg/odometry_meta.hpp"
+#include "interfaces/msg/correction_feedback_accepted.hpp"
 
 #include "sensor_msgs/msg/imu.hpp"
 #include "sensor_msgs/msg/range.hpp"
@@ -84,6 +95,10 @@ namespace control
     std::mutex mutex_frame;
     cv::Mat frame;
     bool cl_flag;
+    /** G6d: last GlobalLoopCommitted (informational; not a re-nav trigger). */
+    bool global_loop_committed_seen_{false};
+    std::string global_loop_committed_source_;
+    uint64_t global_loop_committed_revision_{0};
 
     ROBOT_STATE r_c;  // robot feedback state
     ROBOT_STATE r_a;  // robot actual state (from webots)
@@ -98,15 +113,28 @@ namespace control
 
     rclcpp::Subscription<interfaces::msg::Robotstate>::SharedPtr sub_Slam_;
     rclcpp::Subscription<nav_msgs::msg::Odometry>::SharedPtr sub_Odom_;
+    rclcpp::Subscription<interfaces::msg::OdometryMeta>::SharedPtr sub_OdomMeta_;
+    rclcpp::Subscription<interfaces::msg::CorrectionApplied>::SharedPtr sub_CorrectionApplied_;
+    /** G6d informational: global map loop commit (never sets cl_flag). */
+    rclcpp::Subscription<interfaces::msg::GlobalLoopCommitted>::SharedPtr
+      sub_GlobalLoopCommitted_;
 
     rclcpp::Subscription<interfaces::msg::Frame>::SharedPtr sub_Frame_;
 
     // declare publishers
     rclcpp::Publisher<geometry_msgs::msg::Twist>::SharedPtr pub_cmd_vel_;
+    rclcpp::Publisher<interfaces::msg::CorrectionFeedbackAccepted>::SharedPtr
+      pub_correction_feedback_accepted_;
 
     // declare Services
       rclcpp::Service<interfaces::srv::SimpleServ>::SharedPtr srv_control_run_;
       void Handle_control_run_service(const std::shared_ptr<interfaces::srv::SimpleServ::Request> request,std::shared_ptr<interfaces::srv::SimpleServ::Response> response);
+      rclcpp::Service<interfaces::srv::CorrectionCoordinate>::SharedPtr srv_correction_coord_;
+      void Handle_correction_coordinate(
+        const std::shared_ptr<interfaces::srv::CorrectionCoordinate::Request> request,
+        std::shared_ptr<interfaces::srv::CorrectionCoordinate::Response> response);
+      void publish_zero_twist();
+      bool wait_cmd_quiescent(std::chrono::milliseconds timeout);
 
     // declare clients
       rclcpp::Client<interfaces::srv::SimpleServ>::SharedPtr client_ekf_run_;
@@ -122,6 +150,12 @@ namespace control
     void setSubscribers();
     std::mutex mutex_run_plan;
     bool run_control_plan;
+    // G6a coordination (separate from legacy SimpleServ 'c' / cl_flag).
+    std::mutex mutex_coord_;
+    g6_coord::CoordSnapshot coord_snap_;
+    std::atomic<bool> coord_suppress_cmd_{false};
+    std::atomic<bool> in_plan_command_{false};
+    std::condition_variable cv_coord_quiet_;
     
     // control plan parser
     int cmd_idx; // command (instruction index)
@@ -143,7 +177,16 @@ namespace control
     /** A5b odometry mode: Robotstate.radius_uncertainty only (no pose). */
     void Slam_radius_only_callback(const interfaces::msg::Robotstate & msg);
     void Odometry_callback(const nav_msgs::msg::Odometry & msg);
+    void OdometryMeta_callback(const interfaces::msg::OdometryMeta & msg);
+    void CorrectionApplied_feedback_callback(
+      const interfaces::msg::CorrectionApplied & msg);
+    void GlobalLoopCommitted_callback(
+      const interfaces::msg::GlobalLoopCommitted & msg);
     void Frame_callback(const interfaces::msg::Frame & msg);
+    void clear_feedback_barrier_locked();
+    void publish_feedback_accepted_locked();
+    void try_pair_odometry_meta(int32_t stamp_sec, uint32_t stamp_nanosec);
+    void note_accepted_snapshot_locked(const g6_feedback::MetaSample & meta);
 
     // Odometry / legacy SLAM yaw latch (public or internal per interface)
     bool slam_yaw_init_flag_{false};
@@ -159,6 +202,14 @@ namespace control
     bool radius_reset_stamp_valid_{false};
     rclcpp::Time radius_reset_stamp_{0, 0, RCL_ROS_TIME};
     void invalidate_cached_radius(bool request_ekf_reinit);
+
+    // G6b feedback barrier (mutex_coord_ guards barrier state with pause).
+    g6_feedback::PendingBarrier feedback_barrier_;
+    std::deque<g6_feedback::MetaSample> odom_meta_buf_;
+    std::deque<std::pair<int32_t, uint32_t>> odom_stamp_buf_;
+    std::deque<g6_feedback::AcceptedSample> accepted_snap_hist_;
+    /** True after Odometry_callback accepted a pose for this stamp (pre-meta). */
+    std::deque<std::pair<int32_t, uint32_t>> accepted_odom_stamps_;
 
     void SaveScreenShot();
     

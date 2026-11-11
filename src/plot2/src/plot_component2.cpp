@@ -39,6 +39,19 @@ PLOTscene2::PLOTscene2(const rclcpp::NodeOptions & options)
   sub_Landmarks_ = this->create_subscription<sensor_msgs::msg::PointCloud2>(
     "landmarks", 10, std::bind(&PLOTscene2::Landmarks_callback, this, _1));
 
+  if (subscribe_global_outputs_) {
+    rclcpp::QoS qos_global(rclcpp::KeepLast(1));
+    qos_global.reliable();
+    qos_global.transient_local();
+    sub_GlobalPath_ = this->create_subscription<nav_msgs::msg::Path>(
+      "global_keyframes", qos_global,
+      std::bind(&PLOTscene2::GlobalPath_callback, this, _1));
+    sub_GlobalLandmarks_ =
+      this->create_subscription<sensor_msgs::msg::PointCloud2>(
+        "global_landmarks", qos_global,
+        std::bind(&PLOTscene2::GlobalLandmarks_callback, this, _1));
+  }
+
   // Custom: camera frame + image-feature overlays / radius; GT.
   sub_Frame_ = this->create_subscription<interfaces::msg::Frame>(
     "Frame_topic", 10, std::bind(&PLOTscene2::Frame_callback, this, _1));
@@ -58,8 +71,11 @@ PLOTscene2::PLOTscene2(const rclcpp::NodeOptions & options)
 
   RCLCPP_INFO(
     this->get_logger(),
-    "Plot2: odometry/path/landmarks (standard) + Frame/Lslam-features/GT (custom); "
-    "plot_service for keyboard view/zoom/clear/screenshot");
+    "Plot2: odometry/path/landmarks (standard)%s + Frame/Lslam-features/GT (custom); "
+    "plot_service for keyboard view/zoom/clear/screenshot",
+    subscribe_global_outputs_ ?
+      "; global_keyframes/global_landmarks (G4 body-origin Path + sparse cloud)" :
+      "");
 }
 
 //--------------------------------------------------------------------------
@@ -112,9 +128,12 @@ void PLOTscene2::PLOT_LOOP()
             std::vector<arma::vec3> gt;            
             std::vector<arma::vec3> feats;
             std::vector<arma::vec3> anchors;
+            std::vector<arma::vec3> gposes;
+            std::vector<arma::vec3> gland;
             get_positions(poses);
             get_gt(gt);
             get_localMap(feats,anchors);
+            get_global_geometry(gposes, gland);
 
             ImGui_ImplOpenGL3_NewFrame();
             ImGui_ImplGlfw_NewFrame();
@@ -122,9 +141,9 @@ void PLOTscene2::PLOT_LOOP()
 
             apply_clear_if_requested();
 
-            draw_plot(poses,gt,feats,anchors);
-            draw_plot_xz(poses,gt,feats,anchors);
-            draw_plot_zy(poses,gt,feats,anchors);
+            draw_plot(poses, gt, feats, anchors, gposes, gland);
+            draw_plot_xz(poses, gt, feats, anchors, gposes, gland);
+            draw_plot_zy(poses, gt, feats, anchors, gposes, gland);
 
             RobotState robotS;
             RobotState robotGT;
@@ -236,6 +255,39 @@ void PLOTscene2::Landmarks_callback(const sensor_msgs::msg::PointCloud2 & msg)
   mapAnchor_.clear();  // cloud merges feats+anchors; color split not available
 }
 
+void PLOTscene2::GlobalPath_callback(const nav_msgs::msg::Path & msg)
+{
+  // Public coordinates unchanged (already converted at Global SLAM publish).
+  std::lock_guard<std::mutex> lock(data_mutex_);
+  global_positions_.clear();
+  global_positions_.reserve(msg.poses.size());
+  for (const auto & ps : msg.poses) {
+    global_positions_.emplace_back(arma::vec3({
+      ps.pose.position.x, ps.pose.position.y, ps.pose.position.z}));
+  }
+}
+
+void PLOTscene2::GlobalLandmarks_callback(const sensor_msgs::msg::PointCloud2 & msg)
+{
+  std::vector<arma::vec3> pts;
+  if (msg.point_step >= 12 && msg.width > 0 && !msg.data.empty()) {
+    pts.reserve(msg.width);
+    for (uint32_t i = 0; i < msg.width; ++i) {
+      const size_t off = static_cast<size_t>(i) * msg.point_step;
+      if (off + 12 > msg.data.size()) {
+        break;
+      }
+      float xyz[3];
+      std::memcpy(xyz, msg.data.data() + off, 12);
+      if (std::isfinite(xyz[0]) && std::isfinite(xyz[1]) && std::isfinite(xyz[2])) {
+        pts.emplace_back(arma::vec3({xyz[0], xyz[1], xyz[2]}));
+      }
+    }
+  }
+  std::lock_guard<std::mutex> lock(data_mutex_);
+  global_landmarks_ = std::move(pts);
+}
+
 void PLOTscene2::lslam_data_callback(const interfaces::msg::Lslam & msg)
 {
   // Custom-only: image feature overlays + radius. Pose/map/path owned by standard topics.
@@ -329,6 +381,8 @@ void PLOTscene2::apply_clear_if_requested()
   gt_.clear();
   mapFeat_.clear();
   mapAnchor_.clear();
+  global_positions_.clear();
+  global_landmarks_.clear();
   distance_traveled_xy = 0;
   lslamstarted_ = false;
 }
@@ -431,6 +485,14 @@ void PLOTscene2::get_positions(std::vector<arma::vec3>& out) {
         out = positions_;
     }
 
+void PLOTscene2::get_global_geometry(
+  std::vector<arma::vec3>& path_out, std::vector<arma::vec3>& landmarks_out)
+{
+  std::lock_guard<std::mutex> lock(data_mutex_);
+  path_out = global_positions_;
+  landmarks_out = global_landmarks_;
+}
+
 //--------------------------------------------------------
 void PLOTscene2::draw_frame_window(const std::vector<arma::vec2>& matchedFeats_,
                                    const std::vector<arma::vec2>& unmatchedFeats_,
@@ -508,7 +570,12 @@ void PLOTscene2::draw_frame_window(const std::vector<arma::vec2>& matchedFeats_,
 //------------------------------------------------------------------
 
 
-void PLOTscene2::draw_plot(const std::vector<arma::vec3>& positions_, const std::vector<arma::vec3>& gt_, const std::vector<arma::vec3>& feats_, const std::vector<arma::vec3>& anchors_) {
+void PLOTscene2::draw_plot(
+  const std::vector<arma::vec3>& positions_, const std::vector<arma::vec3>& gt_,
+  const std::vector<arma::vec3>& feats_, const std::vector<arma::vec3>& anchors_,
+  const std::vector<arma::vec3>& global_path_,
+  const std::vector<arma::vec3>& global_landmarks_)
+{
     
     ImVec2 canvas_size = ImVec2(500, 500);   
 
@@ -635,6 +702,12 @@ void PLOTscene2::draw_plot(const std::vector<arma::vec3>& positions_, const std:
         draw_list->AddCircleFilled(p, 1.5f, IM_COL32(150, 0, 255, 200)); // 
     }
 
+    // ───── Global landmarks (magenta; sparse GS map) ─────
+    for (const auto& pt : global_landmarks_) {
+        ImVec2 p = world_to_screen(pt);
+        draw_list->AddCircleFilled(p, 2.0f, IM_COL32(255, 0, 200, 220));
+    }
+
     // ───── Draw gt ─────
     for (size_t i = 1; i < gt_.size(); ++i) {
         ImVec2 p1 = world_to_screen(gt_[i - 1]);
@@ -644,11 +717,18 @@ void PLOTscene2::draw_plot(const std::vector<arma::vec3>& positions_, const std:
         
     }
 
-    // ───── Draw Path ─────
+    // ───── Draw Path (local estimate) ─────
     for (size_t i = 1; i < positions_.size(); ++i) {
         ImVec2 p1 = world_to_screen(positions_[i - 1]);
         ImVec2 p2 = world_to_screen(positions_[i]);
         draw_list->AddLine(p1, p2, IM_COL32(255, 100, 100, 255), 1.5f);
+    }
+
+    // ───── Global keyframes (cyan; body origin) ─────
+    for (size_t i = 1; i < global_path_.size(); ++i) {
+        ImVec2 p1 = world_to_screen(global_path_[i - 1]);
+        ImVec2 p2 = world_to_screen(global_path_[i]);
+        draw_list->AddLine(p1, p2, IM_COL32(0, 200, 255, 255), 2.0f);
     }
 
     
@@ -716,7 +796,12 @@ void PLOTscene2::draw_plot(const std::vector<arma::vec3>& positions_, const std:
 
 //--------------------------------------------------------------------------------------
 
-void PLOTscene2::draw_plot_xz(const std::vector<arma::vec3>& positions_, const std::vector<arma::vec3>& gt_, const std::vector<arma::vec3>& feats_, const std::vector<arma::vec3>& anchors_) {
+void PLOTscene2::draw_plot_xz(
+  const std::vector<arma::vec3>& positions_, const std::vector<arma::vec3>& gt_,
+  const std::vector<arma::vec3>& feats_, const std::vector<arma::vec3>& anchors_,
+  const std::vector<arma::vec3>& global_path_,
+  const std::vector<arma::vec3>& global_landmarks_)
+{
     
     ImVec2 canvas_size = ImVec2(440, 220);   
 
@@ -835,6 +920,11 @@ void PLOTscene2::draw_plot_xz(const std::vector<arma::vec3>& positions_, const s
         draw_list->AddCircleFilled(p, 1.5f, IM_COL32(150, 0, 255, 200));
     }
 
+    for (const auto& pt : global_landmarks_) {
+        ImVec2 p = world_to_screen(pt);
+        draw_list->AddCircleFilled(p, 2.0f, IM_COL32(255, 0, 200, 220));
+    }
+
     // ───── Draw Ground Truth Path ─────
     for (size_t i = 1; i < gt_.size(); ++i) {
         ImVec2 p1 = world_to_screen(gt_[i - 1]);
@@ -847,6 +937,12 @@ void PLOTscene2::draw_plot_xz(const std::vector<arma::vec3>& positions_, const s
         ImVec2 p1 = world_to_screen(positions_[i - 1]);
         ImVec2 p2 = world_to_screen(positions_[i]);
         draw_list->AddLine(p1, p2, IM_COL32(255, 100, 100, 255), 1.5f);
+    }
+
+    for (size_t i = 1; i < global_path_.size(); ++i) {
+        ImVec2 p1 = world_to_screen(global_path_[i - 1]);
+        ImVec2 p2 = world_to_screen(global_path_[i]);
+        draw_list->AddLine(p1, p2, IM_COL32(0, 200, 255, 255), 2.0f);
     }
 
     // ───── Draw Current Positions ─────
@@ -892,7 +988,12 @@ void PLOTscene2::draw_plot_xz(const std::vector<arma::vec3>& positions_, const s
 }
 //------------------------------------------------------------------------
 
-void PLOTscene2::draw_plot_zy(const std::vector<arma::vec3>& positions_, const std::vector<arma::vec3>& gt_, const std::vector<arma::vec3>& feats_, const std::vector<arma::vec3>& anchors_) {
+void PLOTscene2::draw_plot_zy(
+  const std::vector<arma::vec3>& positions_, const std::vector<arma::vec3>& gt_,
+  const std::vector<arma::vec3>& feats_, const std::vector<arma::vec3>& anchors_,
+  const std::vector<arma::vec3>& global_path_,
+  const std::vector<arma::vec3>& global_landmarks_)
+{
     
     
     
@@ -1010,12 +1111,22 @@ void PLOTscene2::draw_plot_zy(const std::vector<arma::vec3>& positions_, const s
         draw_list->AddCircleFilled(world_to_screen(pt), 1.5f, IM_COL32(150, 0, 255, 200));
     }
 
+    for (const auto& pt : global_landmarks_) {
+        draw_list->AddCircleFilled(world_to_screen(pt), 2.0f, IM_COL32(255, 0, 200, 220));
+    }
+
     for (size_t i = 1; i < gt_.size(); ++i) {
         draw_list->AddLine(world_to_screen(gt_[i - 1]), world_to_screen(gt_[i]), IM_COL32(0, 0, 0, 255), 1.5f);
     }
 
     for (size_t i = 1; i < positions_.size(); ++i) {
         draw_list->AddLine(world_to_screen(positions_[i - 1]), world_to_screen(positions_[i]), IM_COL32(255, 100, 100, 255), 1.5f);
+    }
+
+    for (size_t i = 1; i < global_path_.size(); ++i) {
+        draw_list->AddLine(
+          world_to_screen(global_path_[i - 1]), world_to_screen(global_path_[i]),
+          IM_COL32(0, 200, 255, 255), 2.0f);
     }
 
     if (!positions_.empty() && !gt_.empty()) {
@@ -1202,6 +1313,11 @@ void PLOTscene2::draw_quad(const RobotState &robotState_, const RobotState &robo
 
     ImGui::TextColored(ImVec4(0.7f, 0.9f, 0.7f, 1.0f), "Distance Traveled (XY): %.3f m", distance_traveled_xy);
     ImGui::Text("Radius uncertainty (custom Lslam): %.3f m", radius_uncertainty_);
+    if (subscribe_global_outputs_) {
+      ImGui::TextColored(
+        ImVec4(0.0f, 0.78f, 1.0f, 1.0f),
+        "Global KF path: cyan (body origin) | Global landmarks: magenta");
+    }
     ImGui::TextDisabled(
       "Frame: odom parent (public +up); GT epoch-aligned at bridge (no 2nd origin)");
 
@@ -1242,7 +1358,9 @@ void PLOTscene2::save_screen_shoot(){
 void PLOTscene2::setParameters()
 {
    this->declare_parameter<string>("label_logs", "CONF");
+   this->declare_parameter<bool>("Subscribe_global_outputs", false);
    this->get_parameter("label_logs", label_logs);
+   this->get_parameter("Subscribe_global_outputs", subscribe_global_outputs_);
 }
 
 

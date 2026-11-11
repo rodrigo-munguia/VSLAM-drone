@@ -30,6 +30,8 @@ struct G_ANCHOR
     int init_KF; //  index of the KeyFrame  where the Feature-anchor was initialized
     int n_kf_matched; // number of kf where the map point has been matched
     int n_tries_matchs; // number of times that the point has been considered to be matched
+    // Audit-only persistent identity (GSLAM_LANDMARK_AUDIT_DIR). Unused in production.
+    int64_t audit_id{-1};
 };
 
 

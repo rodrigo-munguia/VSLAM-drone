@@ -1,5 +1,6 @@
 #include "control_component.hpp"
 #include "go_home_ru.hpp"
+#include "g6b_plan_interrupt.hpp"
 #include "../../common/Vision/vision.hpp"
 #include "../../common/Transforms/Euler_to_Ra2b.hpp"
 #include <cmath>
@@ -39,6 +40,7 @@ namespace control
         mutex_run_plan.lock();
            run = run_control_plan;           
         mutex_run_plan.unlock();
+        in_plan_command_ = true;
 
         std::vector<int> markerIds;
         std::vector<std::vector<cv::Point2f>> markerCorners, rejectedCandidates;
@@ -71,6 +73,14 @@ namespace control
             mutex_frame.lock(); 
                 img = frame;
             mutex_frame.unlock();
+
+            if (img.empty()) {
+                std::this_thread::sleep_for(std::chrono::milliseconds(50));
+                mutex_run_plan.lock();
+                run = run_control_plan;
+                mutex_run_plan.unlock();
+                continue;
+            }
 
             //cout << img.rows << endl;    
             cv::aruco::detectMarkers(img, dictionary, markerCorners, markerIds, parameters, rejectedCandidates);
@@ -130,7 +140,17 @@ namespace control
                     twist_msg.linear.z = 0;    // Linear velocity along y-axis                         
                     twist_msg.angular.z = 0;
                     pub_cmd_vel_->publish(twist_msg);
+                    in_plan_command_ = false;
+                    cv_coord_quiet_.notify_all();
                     return true;
+                }
+                if (coord_suppress_cmd_.load()) {
+                    publish_zero_twist();
+                    std::this_thread::sleep_for(std::chrono::milliseconds(50));
+                    mutex_run_plan.lock();
+                    run = run_control_plan;
+                    mutex_run_plan.unlock();
+                    continue;
                 }
                 //--------------------------------------------------------
                 // --- compute x-y control -------------------------------            
@@ -197,6 +217,33 @@ namespace control
                 mutex_run_plan.lock();
                     run = run_control_plan;
                 mutex_run_plan.unlock();
+                if (g6b_plan::classify_run_clear(run, coord_suppress_cmd_.load()) ==
+                  g6b_plan::InterruptKind::CoordPause)
+                {
+                  in_plan_command_ = false;
+                  cv_coord_quiet_.notify_all();
+                  publish_zero_twist();
+                  while (true) {
+                    const bool still_run = [&]() {
+                      std::lock_guard<std::mutex> lk(mutex_run_plan);
+                      return run_control_plan;
+                    }();
+                    const bool suppress = coord_suppress_cmd_.load();
+                    if (g6b_plan::should_resume_same_target(still_run, suppress)) {
+                      in_plan_command_ = true;
+                      run = true;
+                      break;
+                    }
+                    if (!still_run && !suppress) {
+                      publish_zero_twist();
+                      in_plan_command_ = false;
+                      cv_coord_quiet_.notify_all();
+                      return false;
+                    }
+                    publish_zero_twist();
+                    std::this_thread::sleep_for(std::chrono::milliseconds(50));
+                  }
+                }
             }
             else
             {   
@@ -230,10 +277,49 @@ namespace control
                         twist_msg.angular.z = 0;
                         pub_cmd_vel_->publish(twist_msg);
 
+                    in_plan_command_ = false;
+                    cv_coord_quiet_.notify_all();
                     return true;
+                }
+
+                mutex_run_plan.lock();
+                    run = run_control_plan;
+                mutex_run_plan.unlock();
+                if (g6b_plan::classify_run_clear(run, coord_suppress_cmd_.load()) ==
+                  g6b_plan::InterruptKind::CoordPause)
+                {
+                  in_plan_command_ = false;
+                  cv_coord_quiet_.notify_all();
+                  publish_zero_twist();
+                  while (true) {
+                    const bool still_run = [&]() {
+                      std::lock_guard<std::mutex> lk(mutex_run_plan);
+                      return run_control_plan;
+                    }();
+                    const bool suppress = coord_suppress_cmd_.load();
+                    if (g6b_plan::should_resume_same_target(still_run, suppress)) {
+                      in_plan_command_ = true;
+                      run = true;
+                      break;
+                    }
+                    if (!still_run && !suppress) {
+                      publish_zero_twist();
+                      in_plan_command_ = false;
+                      cv_coord_quiet_.notify_all();
+                      return false;
+                    }
+                    publish_zero_twist();
+                    std::this_thread::sleep_for(std::chrono::milliseconds(50));
+                  }
                 }
             }
         }
+
+        // Operator stop (run cleared without coord suppress).
+        in_plan_command_ = false;
+        cv_coord_quiet_.notify_all();
+        publish_zero_twist();
+        return false;
     }
 
 
@@ -249,6 +335,8 @@ namespace control
         mutex_run_plan.lock();
            run = run_control_plan;           
         mutex_run_plan.unlock();
+
+        in_plan_command_ = true;
                
         bool x_s = false;
         bool y_s = false;
@@ -256,7 +344,17 @@ namespace control
         bool yaw_s = false;
 
         while(run == true && succes == false )
-        {            
+        {
+            // G6a: coordination suppress — zero cmd only (not physical hover proof).
+            if (coord_suppress_cmd_.load()) {
+                publish_zero_twist();
+                std::this_thread::sleep_for(std::chrono::milliseconds(50));
+                mutex_run_plan.lock();
+                run = run_control_plan;
+                mutex_run_plan.unlock();
+                continue;
+            }
+
             // error = target_pos - current_pos  (in navigation frame)
             mutex_robot_state.lock();
                 double yaw = r_c.yaw;
@@ -292,6 +390,8 @@ namespace control
                 twist_msg.linear.z = 0;    // Linear velocity along y-axis                         
                 twist_msg.angular.z = 0;
                 pub_cmd_vel_->publish(twist_msg);
+                in_plan_command_ = false;
+                cv_coord_quiet_.notify_all();
                 return true;
             }
             
@@ -365,9 +465,45 @@ namespace control
             mutex_run_plan.lock();
                 run = run_control_plan;
             mutex_run_plan.unlock();
+
+            // G6b.1: coordination pause clears run_control_plan for quiescence
+            // but must not fail/advance this command — park until resume.
+            const auto kind = g6b_plan::classify_run_clear(
+              run, coord_suppress_cmd_.load());
+            if (kind == g6b_plan::InterruptKind::CoordPause) {
+              in_plan_command_ = false;
+              cv_coord_quiet_.notify_all();
+              publish_zero_twist();
+              while (true) {
+                const bool still_run = [&]() {
+                  std::lock_guard<std::mutex> lk(mutex_run_plan);
+                  return run_control_plan;
+                }();
+                const bool suppress = coord_suppress_cmd_.load();
+                if (g6b_plan::should_resume_same_target(still_run, suppress)) {
+                  in_plan_command_ = true;
+                  run = true;
+                  cout << "Control -> resume go_point after coordination pause "
+                       << "target=(" << r_d.x << "," << r_d.y << "," << r_d.z
+                       << ")" << endl;
+                  break;
+                }
+                if (!still_run && !suppress) {
+                  // Operator stop while parked.
+                  publish_zero_twist();
+                  in_plan_command_ = false;
+                  cv_coord_quiet_.notify_all();
+                  return false;
+                }
+                publish_zero_twist();
+                std::this_thread::sleep_for(std::chrono::milliseconds(50));
+              }
+            }
         }   
 
-
+        publish_zero_twist();
+        in_plan_command_ = false;
+        cv_coord_quiet_.notify_all();
         cout << "Control -> Something went wrong with go_point cmd.." << endl;
         return false;
     }
@@ -583,7 +719,24 @@ namespace control
                 // No Close Loop has been detected when going home..
                 // r_u = Robotstate.radius_uncertainty = sqrt(max(Pc_xx,Pc_yy)).
                 // A5b: available in odometry pose mode via radius-only subscription.
-                 cout << "control -> No CL detected when going home.. " << endl;
+                 bool saw_global = false;
+                 std::string gl_src;
+                 uint64_t gl_rev = 0;
+                 mutex_cl.lock();
+                   saw_global = global_loop_committed_seen_;
+                   gl_src = global_loop_committed_source_;
+                   gl_rev = global_loop_committed_revision_;
+                 mutex_cl.unlock();
+                 if (saw_global) {
+                   cout << "control -> Global loop committed (" << gl_src
+                        << " rev=" << gl_rev
+                        << "); Local SLAM feedback disabled/rejected/pending "
+                           "— not re-navigating from informational event"
+                        << endl;
+                 } else {
+                   cout << "control -> No global loop committed when going home.."
+                        << endl;
+                 }
                  mutex_robot_state.lock();
                     ROBOT_STATE r = r_c; // get current robot state
                  mutex_robot_state.unlock();
@@ -624,7 +777,25 @@ namespace control
                     }
                     else
                     {
-                        cout << "control-> No CL has been detected during exploration...." << endl;
+                        bool saw_global = false;
+                        std::string gl_src;
+                        uint64_t gl_rev = 0;
+                        mutex_cl.lock();
+                          saw_global = global_loop_committed_seen_;
+                          gl_src = global_loop_committed_source_;
+                          gl_rev = global_loop_committed_revision_;
+                        mutex_cl.unlock();
+                        if (saw_global) {
+                          cout << "control-> Global loop committed (" << gl_src
+                               << " rev=" << gl_rev
+                               << "); Local feedback not accepted — "
+                                  "not re-navigating from informational event"
+                               << endl;
+                        } else {
+                          cout << "control-> No global loop committed during "
+                                  "exploration...."
+                               << endl;
+                        }
                     }
                  }
 

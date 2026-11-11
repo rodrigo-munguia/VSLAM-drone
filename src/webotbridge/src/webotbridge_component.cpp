@@ -501,11 +501,16 @@ void WEBOTb::EstimatorReference_callback(
     invalidate_gt_epoch("EstimatorReference valid=false");
     return;
   }
-  // New epoch or update (e.g. altitude became valid).
-  if (have_ref_msg_ && last_ref_msg_.valid &&
-    last_ref_msg_.epoch_id != msg.epoch_id)
-  {
-    invalidate_gt_epoch("new EstimatorReference epoch_id");
+  // New session (component recreation), new epoch, or metadata update
+  // (e.g. altitude became valid within the same session/epoch).
+  if (have_ref_msg_ && last_ref_msg_.valid) {
+    const bool session_changed =
+      last_ref_msg_.session_id.uuid != msg.session_id.uuid;
+    if (session_changed) {
+      invalidate_gt_epoch("new EstimatorReference session_id");
+    } else if (last_ref_msg_.epoch_id != msg.epoch_id) {
+      invalidate_gt_epoch("new EstimatorReference epoch_id");
+    }
   }
   have_ref_msg_ = true;
   last_ref_msg_ = msg;

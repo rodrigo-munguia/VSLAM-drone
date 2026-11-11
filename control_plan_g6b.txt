@@ -1,0 +1,18 @@
+# G6b coordinated-corrections mission (opt-in via --control-plan).
+# Does not replace the default control_plan.txt.
+# Sequence: takeoff → hover → enable LS → patrol (travel > 10 m) →
+# activate home-tag close-loop + return → land.
+TakeOff
+pointV,0,0,3,0
+StartSLAM
+pointa,0,10,3,0
+pointa,10,10,3,0
+pointa,10,-10,3,0
+pointa,0,-10,3,0
+pointa,0,10,3,0
+pointa,10,10,3,0
+pointa,10,-10,3,0
+pointa,0,-10,3,0
+GoHome
+Land
+StopSLAM

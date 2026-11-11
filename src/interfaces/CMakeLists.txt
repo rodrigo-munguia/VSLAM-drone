@@ -11,11 +11,7 @@ find_package(rclcpp REQUIRED)
 find_package(rosidl_default_generators REQUIRED)
 find_package(sensor_msgs REQUIRED)
 find_package(geometry_msgs REQUIRED)
-# uncomment the following section in order to fill in
-# further dependencies manually.
-# find_package(<dependency> REQUIRED)
-
-
+find_package(unique_identifier_msgs REQUIRED)
 
 rosidl_generate_interfaces(${PROJECT_NAME}
   "msg/Alt.msg"
@@ -33,9 +29,15 @@ rosidl_generate_interfaces(${PROJECT_NAME}
   "msg/Odovw.msg"
   "msg/Rangetobase.msg"
   "msg/EstimatorReference.msg"
+  "msg/CorrectionApplied.msg"
+  "msg/OdometryMeta.msg"
+  "msg/CorrectionFeedbackAccepted.msg"
+  "msg/GlobalLoopCommitted.msg"
   "srv/SimpleServ.srv"
   "srv/LSposUpdate.srv"
+  "srv/CorrectionCoordinate.srv"
   DEPENDENCIES sensor_msgs geometry_msgs std_msgs builtin_interfaces
+    unique_identifier_msgs
 )
 
 #rosidl_target_interfaces(intercafes

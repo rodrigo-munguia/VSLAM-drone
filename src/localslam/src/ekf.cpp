@@ -1,4 +1,5 @@
 #include "ekf.hpp"
+#include "ls_pos_apply_policy.hpp"
 #include "../../common/Transforms/Euler_to_Ra2b.hpp"
 #include "../../common/Transforms/Ra2b_TO_Quat_a2b.hpp"
 #include "../../common/Transforms/AngleWrap.hpp"
@@ -424,108 +425,72 @@ void EKF::ekf_step(DATA &dat)
 }
 
 //----------------------------------------------------
-void EKF::Update_pos_with_delta(arma::vec::fixed<3> delta_pos, string type)
-{ 
-  
-  double innov_xy = sqrt(pow(delta_pos[0],2) + pow(delta_pos[1],2)); 
+EKF::PosDeltaApplyResult EKF::Update_pos_with_delta(
+  arma::vec::fixed<3> delta_pos, string type)
+{
+  using localslam::PosUpdateGateParams;
+  using localslam::plan_pos_update_apply;
 
-  if (type == "bundle_adjustment")
-  { 
-     //--------------------------------------------------------------
-    //cout << "EKF-SLAM -> BA update" << endl;
-    // update robot position
-    if(PAR.GS_xy_update == true && innov_xy < PAR.GS_xy_update_max_delta )
-    {
-      x[7] = x[7] + delta_pos[0];
-      x[8] = x[8] + delta_pos[1];
-    }
-    if(PAR.GS_z_update == true && delta_pos[2] < PAR.GS_z_update_max_delta)
-    {  
-      x[9] = x[9] + delta_pos[2];
-    }  
-    // update Features position
-    for(int i = 0; i< FeatsDATA.size();i++ )
-    {
-      int idx_i = FeatsDATA[i].idx_i_state;
-      if(PAR.GS_xy_update == true && innov_xy < PAR.GS_xy_update_max_delta )
-      {
-        x[idx_i] = x[idx_i] + delta_pos[0];
-        x[idx_i+1] = x[idx_i+1] + delta_pos[1];
-      }
-      if(PAR.GS_z_update == true && delta_pos[2] < PAR.GS_z_update_max_delta)
-      {   
-        x[idx_i+2] = x[idx_i+2] + delta_pos[2];
-      }  
-    }
-    // Updates Anchors position
-    for(int i = 0; i< AnchorsDATA.size();i++)
-    { 
-      if(PAR.GS_xy_update == true && innov_xy < PAR.GS_xy_update_max_delta )
-      {
-        AnchorsDATA[i].AnchorState[0]  =  AnchorsDATA[i].AnchorState[0] + delta_pos[0];
-        AnchorsDATA[i].AnchorState[1]  =  AnchorsDATA[i].AnchorState[1] + delta_pos[1];
-      }
-      if(PAR.GS_z_update == true && delta_pos[2] < PAR.GS_z_update_max_delta)
-      { 
-        AnchorsDATA[i].AnchorState[2]  =  AnchorsDATA[i].AnchorState[2] + delta_pos[2];
-      }  
-    }
-    //---------------------------------------------------------------------     
+  PosUpdateGateParams gates;
+  gates.gs_xy = PAR.GS_xy_update;
+  gates.gs_z = PAR.GS_z_update;
+  gates.gs_xy_max = PAR.GS_xy_update_max_delta;
+  gates.gs_z_max = PAR.GS_z_update_max_delta;
+  gates.cl_xy = PAR.CL_xy_update;
+  gates.cl_z = PAR.CL_z_update;
+  gates.cl_xy_max = PAR.CL_xy_update_max_delta;
+  gates.cl_z_max = PAR.CL_z_update_max_delta;
+
+  const auto plan = plan_pos_update_apply(
+    delta_pos[0], delta_pos[1], delta_pos[2], type, gates);
+
+  PosDeltaApplyResult out;
+  out.applied = plan.any_applied;
+  out.applied_dx = plan.applied_dx;
+  out.applied_dy = plan.applied_dy;
+  out.applied_dz = plan.applied_dz;
+  out.reset_pc = plan.reset_pc;
+
+  if (!plan.any_applied) {
+    return out;
   }
-  else if(type == "close_loop")
-  {
-    //cout << "EKF-SLAM -> CL update" << endl;
-    // update robot position
-    //cout << "ekf deltapos : " << delta_pos << endl; 
-   // cout << "pos b: " << x[7] << " " << x[8] << " " << x[9] << endl;
-    if(PAR.CL_xy_update == true && innov_xy < PAR.CL_xy_update_max_delta )
-    {
-      x[7] = x[7] + delta_pos[0];
-      x[8] = x[8] + delta_pos[1];
+
+  if (plan.apply_xy) {
+    x[7] = x[7] + plan.applied_dx;
+    x[8] = x[8] + plan.applied_dy;
+  }
+  if (plan.apply_z) {
+    x[9] = x[9] + plan.applied_dz;
+  }
+
+  for (size_t i = 0; i < FeatsDATA.size(); i++) {
+    const int idx_i = FeatsDATA[i].idx_i_state;
+    if (plan.apply_xy) {
+      x[idx_i] = x[idx_i] + plan.applied_dx;
+      x[idx_i + 1] = x[idx_i + 1] + plan.applied_dy;
     }
-    if(PAR.CL_z_update == true && delta_pos[2] < PAR.CL_z_update_max_delta)
-    {  
-      x[9] = x[9] + delta_pos[2];
+    if (plan.apply_z) {
+      x[idx_i + 2] = x[idx_i + 2] + plan.applied_dz;
     }
-    //cout << "pos a: " << x[7] << " " << x[8] << " " << x[9] << endl;  
-    // update Features position
-    for(int i = 0; i< FeatsDATA.size();i++ )
-    {
-      int idx_i = FeatsDATA[i].idx_i_state;
-      if(PAR.CL_xy_update == true && innov_xy < PAR.CL_xy_update_max_delta )
-      {
-        x[idx_i] = x[idx_i] + delta_pos[0];
-        x[idx_i+1] = x[idx_i+1] + delta_pos[1];
-      }
-      if(PAR.CL_z_update == true && delta_pos[2] < PAR.CL_z_update_max_delta)
-      {   
-        x[idx_i+2] = x[idx_i+2] + delta_pos[2];
-      }  
+  }
+  for (size_t i = 0; i < AnchorsDATA.size(); i++) {
+    if (plan.apply_xy) {
+      AnchorsDATA[i].AnchorState[0] += plan.applied_dx;
+      AnchorsDATA[i].AnchorState[1] += plan.applied_dy;
     }
-    // Updates Anchors position
-    for(int i = 0; i< AnchorsDATA.size();i++)
-    { 
-      if(PAR.CL_xy_update == true && innov_xy < PAR.CL_xy_update_max_delta )
-      {
-        AnchorsDATA[i].AnchorState[0]  =  AnchorsDATA[i].AnchorState[0] + delta_pos[0];
-        AnchorsDATA[i].AnchorState[1]  =  AnchorsDATA[i].AnchorState[1] + delta_pos[1];
-      }
-      if(PAR.CL_z_update == true && delta_pos[2] < PAR.CL_z_update_max_delta)
-      { 
-        AnchorsDATA[i].AnchorState[2]  =  AnchorsDATA[i].AnchorState[2] + delta_pos[2];
-      }  
+    if (plan.apply_z) {
+      AnchorsDATA[i].AnchorState[2] += plan.applied_dz;
     }
-    // reset Cl_uncertainty
+  }
+
+  // close_loop: reset CL horizontal uncertainty only when a correction applied.
+  if (plan.reset_pc) {
     Pc.zeros();
-    //---------------------------------------------------------------------    
   }
-
-
-  //cout << "delta_pos update request: " << delta_pos << endl;
-  
-  
-  
-
+  // Covariance P is intentionally unchanged (existing behavior).
+  // Expose corrected pose on the next snapshot publish (same EKF cycle).
+  NewRobotState_available = true;
+  return out;
 }
 //--------------------------------------
 void EKF::SetCompute_Pc_flag(bool state)
@@ -729,6 +694,32 @@ bool EKF::get_KeyFrameCL(KEYFRAME &KF)
     return false;
   }
 
+}
+
+void EKF::set_reference_identity(
+  const slam_identity::UuidBytes & session_id, uint64_t epoch_id)
+{
+  ref_session_id_ = session_id;
+  ref_epoch_id_ = epoch_id;
+  next_keyframe_id_ = 1;
+  // Drop any buffered KF selected under a previous identity.
+  NewKF_available = false;
+  New_KF_cl = false;
+}
+
+void EKF::stamp_keyframe_identity(KEYFRAME & kf, FRAME * frame, uint8_t stream)
+{
+  kf.session_id = ref_session_id_;
+  kf.epoch_id = ref_epoch_id_;
+  kf.keyframe_id = next_keyframe_id_++;
+  kf.stream = stream;
+  if (frame != nullptr && frame->time > 0) {
+    kf.source_time_ms = frame->time;
+    kf.source_stamp_valid = true;
+  } else {
+    kf.source_time_ms = 0;
+    kf.source_stamp_valid = false;
+  }
 }
 
 //-------------------------------------------------------------------

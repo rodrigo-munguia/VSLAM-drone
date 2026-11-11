@@ -42,7 +42,8 @@ dataset playback. The legacy OpenCV **`plot`** package has been **removed**.
 - Webots R2025a (`WEBOTS_HOME`)
 - Armadillo + BLAS/LAPACK
 - OpenCV (contrib modules as needed by Local/Global SLAM; **VIZ/VTK not required** after `plot` removal)
-- GTSAM (Global SLAM package; needed if that package is built)
+- GTSAM 4.2.x (required to build `globalslam`; user prefix via
+  `CMAKE_PREFIX_PATH` / `GTSAM_DIR` — see `tools/gtsam_prefix.env.example`)
 
 **Optional**
 
@@ -74,25 +75,68 @@ colcon build --packages-select interfaces localslam \
   --build-base build --install-base install
 ```
 
+Global SLAM (requires GTSAM 4.2.x on `CMAKE_PREFIX_PATH`; not in `./launch2.sh`):
+
+```bash
+# set -a && source tools/gtsam_prefix.env && set +a   # see .env.example
+colcon build --packages-select interfaces globalslam \
+  --build-base build --install-base install
+source install/setup.bash
+ros2 launch globalslam globalslam.launch.py   # works from /tmp
+```
+
+Normal `globalslam` builds **fail** if GTSAM is missing. Policy-unit-tests only
+(no component): `--cmake-args -DGLOBALSLAM_POLICY_TESTS_ONLY=ON`.
+
 Override the install prefix with `EKF_INSTALL_BASE` if needed (default for
 `./launch2.sh` is `install/`).
 
 ## One-command integrated launch
 
+Two quadrotor LocalSLAM profiles:
+
+| Launcher | Default YAML | LocalSLAM mode |
+|---|---|---|
+| `./launch2.sh` | `config/quad_params.yaml` | **Velocity-aided** (`Speed_update: true`, `min_vel: 0.1`, `Sigma_a: 6`, `Sigma_cam_uv: 10`) |
+| `./launch3.sh` | `config/quad_params_no_velocity.yaml` | **Velocity-free optimized** (`Speed_update: false`, `min_vel: -1`, `Sigma_a: 4`, `Sigma_cam_uv: 10`) |
+
+`launch3.sh` reuses `launch2.sh` and only changes the default `--params-file`. An explicit `--params-file` on either launcher overrides the default. Velocity-aided production tuning is unchanged. Evidence: [`docs/evidence/lslam_nov_vel_t2/`](docs/evidence/lslam_nov_vel_t2/).
+
 ```bash
 source /opt/ros/jazzy/setup.bash
 source install/setup.bash
-./launch2.sh
-# equivalents:
+./launch2.sh                         # velocity-aided baseline
+./launch3.sh                         # optimized velocity-free LocalSLAM
+./launch3.sh --globalslam false --viewer plot2
+./launch2.sh --params-file "$PWD/config/quad_params_no_velocity.yaml"  # same as launch3 default
+# equivalents / options (apply to launch2 or launch3):
 ./launch2.sh --viewer plot2
 ./launch2.sh --viewer rviz2
 ./launch2.sh --viewer none
 ./launch2.sh --slam-feedback false   # Stage A: GT GPS control feedback
+./launch2.sh --globalslam true       # Global Path/cloud; Local feedback still off
+# G6d: BA feedback off + tag-loop Local feedback on (coordinated):
+./launch2.sh --globalslam true \
+  --apply-ba-corrections false --apply-tag-loop-corrections true \
+  --slam-feedback false
+# Compatibility master (forces Apply_* for each enabled source; never enables visual):
+./launch2.sh --globalslam true --global-corrections true --slam-feedback false
+./launch2.sh --globalslam true --global-corrections true \
+  --slam-feedback true --slam-feedback-interface odometry \
+  --control-plan "$(pwd)/control_plan_g6b.txt"
 ```
 
 Starts **one** Webots, **one** application container, **one** chosen viewer
 (or none), plus an operator terminal. Status/logs stay in the launching
 terminal. Ctrl-C cleans up launcher-owned processes.
+
+G6d: `Enable_*` / `Apply_*` are independent per source (BA, tag loop, visual
+ORB/PnP). All `Apply_*` default **false**. `--global-corrections true` is a
+compatibility master that forces `Apply_*` only for enabled sources and forces
+`Coordinate_mode=required` (no absent_ok/offline_bypass). It does **not**
+silently enable visual-loop processing. `--slam-feedback` selects Control nav
+pose source only — it is **not** Local correction enablement. See
+[`docs/evidence/g6b/G6d_CLOSEOUT.md`](docs/evidence/g6b/G6d_CLOSEOUT.md).
 
 Viewer differences: see [`docs/viewers.md`](docs/viewers.md).
 
@@ -156,7 +200,8 @@ Webots→public-odom conversion. Path pose orientation is identity
 config/          experiment YAML (authoritative)
 control_plan.txt default plan
 launch/          repo-level launch helpers
-launch2.sh       canonical integrated entry point
+launch2.sh       velocity-aided integrated entry point
+launch3.sh       velocity-free optimized entry point (wraps launch2.sh)
 src/             ROS packages + shared common/
 docs/            index, viewers, history/, evidence/
 tools/           smoke/, audit/, analysis/
@@ -186,6 +231,20 @@ Inspect: `ros2 topic echo /ground_truth/path --once` after
 - FluidPressure altitude support is deferred.
 - RViz2 does not show Plot2 image overlays or custom statistics.
 - Deprecated OpenCV `plot` is removed; do not expect its topic semantics.
+- Global SLAM G2–G6d: loadable component; session/epoch KF + correction
+  identity; standard Path/cloud; offline `LSposUpdate` apply path; G6a/G6b
+  `CorrectionCoordinate` pause/apply/feedback-barrier/release; unique
+  `OdometryMeta.snapshot_seq` association for Control acceptance before
+  odometry-plan resume; G6d independent `Enable_*`/`Apply_*` and
+  `GlobalLoopCommitted` informational event; optional
+  `./launch2.sh --globalslam true` with per-source `--apply-*-corrections`
+  or master `--global-corrections` (defaults **false**). Pause ack ≠ hover.
+  Visual ORB loop exclusive/off-by-default — not mission-claimed without
+  candidate evidence. Needs GTSAM 4.2.x via `CMAKE_PREFIX_PATH` /
+  `LD_LIBRARY_PATH`. See
+  [`docs/history/G1_globalslam_interface_contract.md`](docs/history/G1_globalslam_interface_contract.md)
+  and [`docs/evidence/g6b/G6d_CLOSEOUT.md`](docs/evidence/g6b/G6d_CLOSEOUT.md).
 
 More detail: [`docs/README.md`](docs/README.md),
-[`docs/history/A9_integrated_launch_plot2.md`](docs/history/A9_integrated_launch_plot2.md).
+[`docs/history/A9_integrated_launch_plot2.md`](docs/history/A9_integrated_launch_plot2.md),
+[`docs/history/G1_globalslam_interface_contract.md`](docs/history/G1_globalslam_interface_contract.md).

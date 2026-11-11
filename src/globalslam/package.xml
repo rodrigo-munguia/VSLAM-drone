@@ -2,13 +2,33 @@
 <?xml-model href="http://download.ros.org/schema/package_format3.xsd" schematypens="http://www.w3.org/2001/XMLSchema"?>
 <package format="3">
   <name>globalslam</name>
-  <version>0.0.0</version>
-  <description>TODO: Package description</description>
+  <version>0.0.1</version>
+  <description>Global map / loop-closure component for EKF-MonoSLAM (ROS 2)</description>
   <maintainer email="munguia.alcala@gmail.com">rodrigo</maintainer>
-  <license>TODO: License declaration</license>
+  <license>Apache-2.0</license>
 
   <buildtool_depend>ament_cmake</buildtool_depend>
 
+  <depend>rclcpp</depend>
+  <depend>rclcpp_components</depend>
+  <depend>rcutils</depend>
+  <depend>std_msgs</depend>
+  <depend>std_srvs</depend>
+  <depend>sensor_msgs</depend>
+  <depend>geometry_msgs</depend>
+  <depend>nav_msgs</depend>
+  <depend>cv_bridge</depend>
+  <depend>interfaces</depend>
+  <depend>unique_identifier_msgs</depend>
+
+  <!-- GTSAM is required for the runtime component (CMake find_package);
+       supply via CMAKE_PREFIX_PATH / GTSAM_DIR. Not vendored. -->
+
+  <exec_depend>launch</exec_depend>
+  <exec_depend>launch_ros</exec_depend>
+  <exec_depend>ament_index_python</exec_depend>
+
+  <test_depend>ament_cmake_gtest</test_depend>
   <test_depend>ament_lint_auto</test_depend>
   <test_depend>ament_lint_common</test_depend>
 

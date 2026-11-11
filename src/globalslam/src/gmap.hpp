@@ -3,6 +3,7 @@
 
 #include <armadillo>
 #include "parameters.hpp"
+#include "gmap_relative_kf_init.hpp"
 #include "../../common/Vision/vision.hpp"
 #include "globalslam_types.hpp"
 #include <opencv2/opencv.hpp>
@@ -62,7 +63,16 @@ class GMAP
         void  Check_visibiliy_graph(int &idx_direct_link, int &idx_indirect_link );
 
         double total_init_anchors;
-        double total_delete_anchors;     
+        double total_delete_anchors;
+
+        // INIT-D4 birth gate diagnostics (always counted; gate itself default-off).
+        int64_t birth_gate_attempts{0};
+        int64_t birth_gate_accepted{0};
+        int64_t birth_gate_rejected{0};
+
+        // BA-D6: EKF-at-admission camera pose of the previous KF (for relative init).
+        bool have_prev_ekf_cam_pose_{false};
+        gmap_relative_kf_init::CamPose prev_ekf_cam_pose_{};
     
     public:
         void InitGmap();
@@ -75,6 +85,14 @@ class GMAP
         void Set_GlobalMap(GLOBAL_MAP &Gmap_c);
 
         arma::vec::fixed<3>  Get_delta_pos();
+
+        void Get_birth_gate_counts(
+          int64_t & attempts, int64_t & accepted, int64_t & rejected) const
+        {
+          attempts = birth_gate_attempts;
+          accepted = birth_gate_accepted;
+          rejected = birth_gate_rejected;
+        }
 
         STOREG store;
 

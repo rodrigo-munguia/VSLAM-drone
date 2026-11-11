@@ -31,6 +31,8 @@
 #include "interfaces/msg/kf.hpp"
 #include "interfaces/msg/robotstate.hpp"
 #include "interfaces/msg/rangetobase.hpp"
+#include "interfaces/msg/correction_applied.hpp"
+#include "interfaces/msg/odometry_meta.hpp"
 #include "sensor_msgs/msg/image.hpp"
 #include "sensor_msgs/msg/imu.hpp"
 #include "sensor_msgs/msg/range.hpp"
@@ -46,13 +48,17 @@
 #include "sensor_msgs/msg/point_cloud2.hpp"
 #include "localslam_types.hpp"
 #include "ekf_types.hpp"
+#include <condition_variable>
 #include <mutex>
 #include "parameters.hpp"
 #include "interfaces/srv/simple_serv.hpp"
 #include "interfaces/srv/l_spos_update.hpp"
 #include "interfaces/msg/lslam.hpp"
 #include "interfaces/msg/estimator_reference.hpp"
+#include "interfaces/msg/correction_applied.hpp"
 #include "../../common/keyframe_types.hpp"
+#include "../../common/slam_identity.hpp"
+#include <unordered_set>
 
 
 using namespace std;
@@ -158,6 +164,10 @@ private:
   rclcpp::Publisher<nav_msgs::msg::Path>::SharedPtr pub_path_;
   /** Latched estimator reference epoch for GT adapters (TRANSIENT_LOCAL). */
   rclcpp::Publisher<interfaces::msg::EstimatorReference>::SharedPtr pub_estimator_ref_;
+  /** G6a: latched notice after applied mutation + odom publish (feedback barrier). */
+  rclcpp::Publisher<interfaces::msg::CorrectionApplied>::SharedPtr pub_correction_applied_;
+  /** G6b: unique snapshot association companion to ~/odometry. */
+  rclcpp::Publisher<interfaces::msg::OdometryMeta>::SharedPtr pub_odometry_meta_;
 
   rclcpp::TimerBase::SharedPtr timer_;
 
@@ -177,6 +187,7 @@ private:
   std::mutex mutex_get_state;
   std::mutex mutex_init_system;
   std::mutex mutex_pos_update;
+  std::condition_variable cv_pos_update_;
   std::mutex mutex_log;
   std::mutex mutex_ru;
   std::mutex mutex_vu;
@@ -215,8 +226,11 @@ private:
   void pub_kf_cl(KEYFRAME &KF);
   void pub_lslam_Data(LOCALSLAM_DATA &lslam_data);
   void pub_robot_state(arma::vec::fixed<13> &x_r,double &radius_uncertainty);
-  /** Returns true if a public odometry message was published (and path appended). */
-  bool pub_odometry(
+  /**
+   * Publish public odometry + OdometryMeta with a unique snapshot_seq.
+   * Returns the snapshot_seq on success, 0 if skipped.
+   */
+  uint64_t pub_odometry(
     const arma::vec::fixed<13> & x_r,
     const arma::mat::fixed<13, 13> & P_r);
   void pub_landmarks_from_lslam(LOCALSLAM_DATA &lslam_data);
@@ -226,12 +240,23 @@ private:
   void publish_estimator_reference_invalid();
   void publish_estimator_reference_from_ekf(
     ::EKF & filter, const DATA & heading_dat);
+  void fill_estimator_reference_identity(interfaces::msg::EstimatorReference & msg) const;
+  void fill_kf_message(interfaces::msg::Kf & message, KEYFRAME & KF) const;
+  void clear_pending_pos_update_locked();
   static builtin_interfaces::msg::Time stamp_from_ms(long int time_ms);
 
+  /** G3: one UUID per component instance; epoch bumps on successful re-init. */
+  slam_identity::UuidBytes estimator_session_id_{slam_identity::nil_uuid()};
   uint64_t estimator_epoch_id_{0};
   bool estimator_ref_published_valid_{false};
   long int epoch_heading_time_ms_{0};
   double epoch_yaw_at_home_{0.0};
+  std::unordered_set<uint64_t> applied_correction_ids_;
+  /** G6b: monotonically increasing; never reused after reset. */
+  uint64_t next_odometry_snapshot_seq_{1};
+  uint64_t last_odometry_snapshot_seq_{0};
+  /** Carried on OdometryMeta until next applied correction or reset. */
+  uint64_t last_published_correction_id_{0};
 
   void log_data(STORE &data);
   void mean_std(std::vector<double> &data, double &mean, double &std, double &sum);

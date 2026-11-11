@@ -46,10 +46,12 @@ namespace plot2
 {
 
 /**
- * Data ownership (A9 workflow / Jazzy):
+ * Data ownership (A9 / G4 workflow / Jazzy):
  *   nav_msgs/Odometry     → estimated pose / twist (public odom parent)
- *   nav_msgs/Path         → estimated trajectory (same snapshots as odometry)
+ *   nav_msgs/Path         → estimated local trajectory (same snapshots as odometry)
  *   sensor_msgs/PointCloud2 → current local landmarks (feats+anchors merged)
+ *   global_keyframes Path → Global SLAM body-origin keyframes (public odom; optional)
+ *   global_landmarks cloud → Global SLAM sparse landmarks (public odom; optional)
  *   interfaces/Lslam      → image feature overlays + radius_uncertainty only
  *   interfaces/Frame      → camera image
  *   geometry_msgs/PointStamped GT_topic → same public-odom GT as /ground_truth/path
@@ -58,6 +60,8 @@ namespace plot2
  *
  * Common display frame: odometry parent (odom), +up public convention.
  * Do not also accumulate trajectory from Odometry when Path is consumed.
+ * Do not also draw custom Gmap when standard global Path/cloud are used.
+ * Path/cloud do not carry session/epoch; empty messages clear global display.
  */
 
 class PLOTscene2 : public rclcpp::Node
@@ -72,10 +76,12 @@ private:
   thread plot_loop_;
   void PLOT_LOOP();
 
-  // Standard (A2/A4)
+  // Standard (A2/A4) + optional Global SLAM (G4)
   rclcpp::Subscription<nav_msgs::msg::Odometry>::SharedPtr sub_Odom_;
   rclcpp::Subscription<nav_msgs::msg::Path>::SharedPtr sub_Path_;
   rclcpp::Subscription<sensor_msgs::msg::PointCloud2>::SharedPtr sub_Landmarks_;
+  rclcpp::Subscription<nav_msgs::msg::Path>::SharedPtr sub_GlobalPath_;
+  rclcpp::Subscription<sensor_msgs::msg::PointCloud2>::SharedPtr sub_GlobalLandmarks_;
   // Custom (narrow): image + feature overlays + radius; GT
   rclcpp::Subscription<interfaces::msg::Frame>::SharedPtr sub_Frame_;
   rclcpp::Subscription<interfaces::msg::Lslam>::SharedPtr sub_lslam_data_;
@@ -90,6 +96,9 @@ private:
   std::vector<arma::vec3> gt_;
   std::vector<arma::vec3> mapFeat_;
   std::vector<arma::vec3> mapAnchor_;
+  std::vector<arma::vec3> global_positions_;
+  std::vector<arma::vec3> global_landmarks_;
+  bool subscribe_global_outputs_{false};
 
   std::vector<arma::vec2> img_matched_feats_;
   std::vector<arma::vec2> img_unmatched_feats_;
@@ -131,16 +140,32 @@ private:
   void Odometry_callback(const nav_msgs::msg::Odometry & msg);
   void Path_callback(const nav_msgs::msg::Path & msg);
   void Landmarks_callback(const sensor_msgs::msg::PointCloud2 & msg);
+  void GlobalPath_callback(const nav_msgs::msg::Path & msg);
+  void GlobalLandmarks_callback(const sensor_msgs::msg::PointCloud2 & msg);
 
-  void draw_plot(const std::vector<arma::vec3>& positions_, const std::vector<arma::vec3>& gt_, const std::vector<arma::vec3>& feats_, const std::vector<arma::vec3>& anchors_);
-  void draw_plot_xz(const std::vector<arma::vec3>& positions_, const std::vector<arma::vec3>& gt_, const std::vector<arma::vec3>& feats_, const std::vector<arma::vec3>& anchors_);
-  void draw_plot_zy(const std::vector<arma::vec3>& positions_, const std::vector<arma::vec3>& gt_, const std::vector<arma::vec3>& feats_, const std::vector<arma::vec3>& anchors_);
+  void draw_plot(
+    const std::vector<arma::vec3>& positions_, const std::vector<arma::vec3>& gt_,
+    const std::vector<arma::vec3>& feats_, const std::vector<arma::vec3>& anchors_,
+    const std::vector<arma::vec3>& global_path_,
+    const std::vector<arma::vec3>& global_landmarks_);
+  void draw_plot_xz(
+    const std::vector<arma::vec3>& positions_, const std::vector<arma::vec3>& gt_,
+    const std::vector<arma::vec3>& feats_, const std::vector<arma::vec3>& anchors_,
+    const std::vector<arma::vec3>& global_path_,
+    const std::vector<arma::vec3>& global_landmarks_);
+  void draw_plot_zy(
+    const std::vector<arma::vec3>& positions_, const std::vector<arma::vec3>& gt_,
+    const std::vector<arma::vec3>& feats_, const std::vector<arma::vec3>& anchors_,
+    const std::vector<arma::vec3>& global_path_,
+    const std::vector<arma::vec3>& global_landmarks_);
   void draw_quad(const RobotState &robotState_, const RobotState &robotStateGT_);
   void draw_frame_window(const std::vector<arma::vec2>& matchedFeats_,const std::vector<arma::vec2>& unmatchedFeats_,const std::vector<arma::vec2>& matchedAnchors_,const std::vector<arma::vec2>& unmatchedAnchors_);
 
   void get_positions(std::vector<arma::vec3>& out);
   void get_gt(std::vector<arma::vec3>& out);
   void get_localMap(std::vector<arma::vec3>& out1, std::vector<arma::vec3>& out2);
+  void get_global_geometry(
+    std::vector<arma::vec3>& path_out, std::vector<arma::vec3>& landmarks_out);
   bool get_robot_state(RobotState &out);
   void get_robot_stateGT(RobotState &out);
   void get_FramePoints(std::vector<arma::vec2>& mf, std::vector<arma::vec2>& uf,std::vector<arma::vec2>& ma, std::vector<arma::vec2>& ua);

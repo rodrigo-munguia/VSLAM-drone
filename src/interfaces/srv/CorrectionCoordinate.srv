@@ -1,0 +1,38 @@
+# G6a: bounded Global↔Control coordination for a discontinuous Local SLAM correction.
+# Not a SetBool toggle — carries transaction ownership and identity.
+#
+# operation:
+#   prepare_pause — request plan/cmd quiescence for this transaction
+#   release       — release pause owned by this transaction after outcome resolved
+#   query         — idempotent status for the given transaction_id
+#   abort         — owner aborts without applying (or after failed apply)
+#
+# transaction_id — typically the correction_id that will be / was dispatched
+# owner_generation — Global SLAM instance nonce (boot); stale owners rejected
+# session_id / epoch_id — Local SLAM reference that must still match at release
+#
+# signal_close_loop (release only): set legacy cl_flag for go_home re-nav
+#   instead of a separate SimpleServ 'c' (avoid double completion actions).
+# resume_plan_if_owned:
+#   release — restore plan if this txn paused it and operator has not superseded
+#             (after applied + required feedback accepted).
+#   abort   — restore plan only for definite non-application. Applied-but-
+#             unresolved feedback must pass false (G6b.1; timeout ≠ non-apply).
+
+string operation
+unique_identifier_msgs/UUID session_id
+uint64 epoch_id
+uint64 transaction_id
+uint64 owner_generation
+string correction_type
+bool signal_close_loop
+bool resume_plan_if_owned
+---
+bool success
+string state
+string reason
+bool plan_was_active
+bool plan_resumed
+bool cmd_source_quiescent
+uint64 active_transaction_id
+uint64 active_owner_generation

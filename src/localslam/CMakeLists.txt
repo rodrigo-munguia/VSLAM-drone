@@ -146,6 +146,16 @@ if(BUILD_TESTING)
       ament_target_dependencies(test_pressure_altitude sensor_msgs std_msgs)
       target_include_directories(test_pressure_altitude PRIVATE src)
     endif()
+
+    ament_add_gtest(test_ls_pos_update_policy test/test_ls_pos_update_policy.cpp)
+    if(TARGET test_ls_pos_update_policy)
+      target_include_directories(test_ls_pos_update_policy PRIVATE src ../common)
+    endif()
+
+    ament_add_gtest(test_ls_pos_apply_policy test/test_ls_pos_apply_policy.cpp)
+    if(TARGET test_ls_pos_apply_policy)
+      target_include_directories(test_ls_pos_apply_policy PRIVATE src)
+    endif()
   endif()
 endif()
 

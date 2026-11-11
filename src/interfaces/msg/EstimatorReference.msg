@@ -1,19 +1,28 @@
-# Explicit Local SLAM reference epoch for ground-truth adapters.
-# Published latched (TRANSIENT_LOCAL) so late subscribers receive the current epoch.
+# Explicit Local SLAM reference identity for adapters and Global SLAM.
+# Published latched (TRANSIENT_LOCAL) so late subscribers receive the current state.
 #
-# valid=false  → previous epoch invalidated (reset); withhold epoch-dependent GT.
-# valid=true   → epoch_id identifies the current initialization.
+# Identity is (session_id, epoch_id):
+#   session_id — UUID generated once per Local SLAM component instance.
+#   epoch_id   — increments on each successful system_init after reinitialization.
 #
-# Heading and altitude references may become valid at different times; check
-# heading_valid / altitude_valid separately. Do not assume simultaneity.
+# valid=false  → current epoch invalidated (reset); withhold epoch-dependent GT /
+#                Global SLAM processing. session_id remains that of this instance.
+# valid=true   → (session_id, epoch_id) identifies the current initialization.
+#
+# Disable/re-enable does not change session_id or epoch_id.
+# Same-epoch altitude/heading metadata updates republish without a new epoch.
+#
+# Assumption: one authoritative Local SLAM EstimatorReference publisher per
+# configured input. Consumers should reject delayed old-session data after a
+# newer session has been adopted.
 #
 # yaw_at_home_internal is exactly the Att.yaw value stored by EKF (pitch/yaw
 # already in the internal convention). yaw_enu_equivalent = -yaw_at_home_internal
-# is the public/Webots ENU yaw corresponding to that noisy measurement — the
-# value GT adapters must use for R_z(-yaw_enu) so heading matches the estimator.
+# is the public/Webots ENU yaw corresponding to that noisy measurement.
 
 std_msgs/Header header
 
+unique_identifier_msgs/UUID session_id
 uint64 epoch_id
 bool valid
 

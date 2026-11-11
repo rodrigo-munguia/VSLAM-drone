@@ -21,6 +21,7 @@
 #include <limits>
 #include <ament_index_cpp/get_package_share_directory.hpp>
 #include "../../common/Transforms/Euler_to_Ra2b.hpp"
+#include "../../common/ros_slam_identity.hpp"
 
 
 
@@ -52,10 +53,20 @@ namespace control
     // Set publisher       
     //pub_Alt_ = create_publisher<interfaces::msg::Alt>("Altitude_topic",10);
     pub_cmd_vel_ = create_publisher<geometry_msgs::msg::Twist>("cmd_vel",10);
-    
+    {
+      rclcpp::QoS qos_fb(rclcpp::KeepLast(1));
+      qos_fb.reliable();
+      qos_fb.transient_local();
+      pub_correction_feedback_accepted_ =
+        create_publisher<interfaces::msg::CorrectionFeedbackAccepted>(
+          "correction_feedback_accepted", qos_fb);
+    }
 
     // Set Services
     srv_control_run_ = this->create_service<interfaces::srv::SimpleServ>("control_run_service",std::bind(&ControlQuad::Handle_control_run_service, this,_1,_2));
+    srv_correction_coord_ = this->create_service<interfaces::srv::CorrectionCoordinate>(
+      "control_correction_coordinate",
+      std::bind(&ControlQuad::Handle_correction_coordinate, this, _1, _2));
     
     // Set client
     client_ekf_run_ = create_client<interfaces::srv::SimpleServ>("ekf_run_service");
@@ -74,6 +85,10 @@ namespace control
     run_control_plan = false;
     control_thread_loop_run = true;
     cl_flag = false;
+    // GT pose path (Slam_feedback=false) multiplies GPS by Rn2rG before the
+    // first IMU sample can populate it. Default-constructed arma::mat is 0x0
+    // and throws on GPS. Match WEBOTb: identity until attitude is available.
+    Rn2rG.eye(3, 3);
 
     
 
@@ -238,6 +253,24 @@ namespace control
         "Unsupported Slam_feedback_interface='" + PAR.Slam_feedback_interface +
         "'. Use 'legacy' or 'odometry'.");
     }
+
+    // G6b: always listen for correction association (GT and odometry barriers).
+    {
+      rclcpp::QoS qos_corr(rclcpp::KeepLast(1));
+      qos_corr.reliable();
+      qos_corr.transient_local();
+      sub_CorrectionApplied_ =
+        this->create_subscription<interfaces::msg::CorrectionApplied>(
+          "correction_applied", qos_corr,
+          std::bind(&ControlQuad::CorrectionApplied_feedback_callback, this, _1));
+      sub_GlobalLoopCommitted_ =
+        this->create_subscription<interfaces::msg::GlobalLoopCommitted>(
+          "global_loop_committed", qos_corr,
+          std::bind(&ControlQuad::GlobalLoopCommitted_callback, this, _1));
+    }
+    sub_OdomMeta_ = this->create_subscription<interfaces::msg::OdometryMeta>(
+      "odometry_meta", 10,
+      std::bind(&ControlQuad::OdometryMeta_callback, this, _1));
   }
   //-----------------------------------------------------------
   void ControlQuad::invalidate_cached_radius(bool request_ekf_reinit)
@@ -254,6 +287,10 @@ namespace control
     mutex_slam_state.lock();
     r_s.r_u = std::numeric_limits<double>::quiet_NaN();
     mutex_slam_state.unlock();
+    {
+      std::lock_guard<std::mutex> lock(mutex_coord_);
+      clear_feedback_barrier_locked();
+    }
     if (request_ekf_reinit && client_ekf_run_) {
       auto request = std::make_shared<interfaces::srv::SimpleServ::Request>();
       request->cmd = 'i';
@@ -262,6 +299,75 @@ namespace control
         this->get_logger(),
         "Coordinated reset: radius disarmed/cleared; requested EKF re-init ('i')");
     }
+  }
+
+  void ControlQuad::clear_feedback_barrier_locked()
+  {
+    g6_feedback::on_estimator_reset(
+      feedback_barrier_, odom_meta_buf_, odom_stamp_buf_, accepted_snap_hist_);
+    accepted_odom_stamps_.clear();
+  }
+
+  void ControlQuad::publish_feedback_accepted_locked()
+  {
+    if (!feedback_barrier_.accepted || !pub_correction_feedback_accepted_) {
+      return;
+    }
+    interfaces::msg::CorrectionFeedbackAccepted msg;
+    msg.header.stamp = this->get_clock()->now();
+    msg.header.frame_id = PAR.Odometry_expect_frame_id;
+    msg.session_id = slam_identity::to_msg(feedback_barrier_.session_id);
+    msg.epoch_id = feedback_barrier_.epoch_id;
+    msg.correction_id = feedback_barrier_.correction_id;
+    msg.snapshot_seq = feedback_barrier_.accepted_snapshot_seq;
+    msg.feedback_mode = feedback_barrier_.feedback_mode;
+    pub_correction_feedback_accepted_->publish(msg);
+    RCLCPP_INFO(
+      this->get_logger(),
+      "[G6b-TXN] CorrectionFeedbackAccepted correction_id=%llu "
+      "snapshot_seq=%llu mode=%s",
+      static_cast<unsigned long long>(msg.correction_id),
+      static_cast<unsigned long long>(msg.snapshot_seq),
+      msg.feedback_mode.c_str());
+  }
+
+  void ControlQuad::note_accepted_snapshot_locked(const g6_feedback::MetaSample & meta)
+  {
+    g6_feedback::AcceptedSample a;
+    a.session_id = meta.session_id;
+    a.epoch_id = meta.epoch_id;
+    a.snapshot_seq = meta.snapshot_seq;
+    a.last_correction_id = meta.last_correction_id;
+    g6_feedback::push_accepted(accepted_snap_hist_, a);
+    if (feedback_barrier_.armed && !feedback_barrier_.accepted &&
+      g6_feedback::meta_satisfies(feedback_barrier_, meta))
+    {
+      if (g6_feedback::accept_odometry(feedback_barrier_, meta.snapshot_seq)) {
+        publish_feedback_accepted_locked();
+      }
+    }
+  }
+
+  void ControlQuad::try_pair_odometry_meta(int32_t stamp_sec, uint32_t stamp_nanosec)
+  {
+    std::lock_guard<std::mutex> lock(mutex_coord_);
+    auto meta = g6_feedback::find_meta_for_stamp(
+      odom_meta_buf_, stamp_sec, stamp_nanosec);
+    if (!meta) {
+      return;
+    }
+    // Pose must already have been accepted for this stamp (or will be soon).
+    bool pose_accepted = false;
+    for (const auto & s : accepted_odom_stamps_) {
+      if (s.first == stamp_sec && s.second == stamp_nanosec) {
+        pose_accepted = true;
+        break;
+      }
+    }
+    if (!pose_accepted) {
+      return;
+    }
+    note_accepted_snapshot_locked(*meta);
   }
 
   void ControlQuad::reinit_control()
@@ -452,13 +558,34 @@ namespace control
       }
       if(cmd == "RecHome")
       { 
-        cout << "control-> start home area recognition " << endl; 
+        cout << "control-> start home area recognition " << endl;
+        // Begin capture before exploration (GS 'b'); finalize after ('u').
+        {
+          auto req_b = std::make_shared<interfaces::srv::SimpleServ::Request>();
+          req_b->cmd = 'b';
+          (void)client_gslam_run_->async_send_request(req_b);
+        }
         result = recognize_home();
         if(result == true)
         {
           auto request = std::make_shared<interfaces::srv::SimpleServ::Request>();
-          request->cmd = 'u';              
-          auto res = client_gslam_run_->async_send_request(request);
+          request->cmd = 'u';
+          // Wait for finalize so plan can stop if capture failed (no zero-origin fallback).
+          auto future = client_gslam_run_->async_send_request(request);
+          const auto wait_st = future.wait_for(std::chrono::seconds(3));
+          if (wait_st == std::future_status::ready) {
+            const auto resp = future.get();
+            if (!resp || !resp->response) {
+              cout << "control-> RecHome capture FAILED (no ready home-tag reference); "
+                   << "withholding home recognition success" << endl;
+              result = false;
+            } else {
+              cout << "control-> RecHome capture READY" << endl;
+            }
+          } else {
+            cout << "control-> RecHome finalize timed out; treating as failure" << endl;
+            result = false;
+          }
         }
       }
       if(cmd=="GoHome")
@@ -487,12 +614,14 @@ namespace control
     { 
       if (request->cmd == 'r')
       { 
+        // Plan start/stop toggle. Keyboard uses 'a' → this cmd (not teleop 'r').
         mutex_run_plan.lock();
         if(run_control_plan == false)
         {
           cout << "control-> request received: Run control plan" << endl;
           
             run_control_plan = true;
+          coord_suppress_cmd_ = false;
           
         }
         else
@@ -500,9 +629,28 @@ namespace control
           cout << "control-> request received: Stop control plan" << endl;
           
           run_control_plan = false;
+          // Operator stop while a G6a pause is owned: block auto-resume.
+          {
+            std::lock_guard<std::mutex> lock(mutex_coord_);
+            g6_coord::mark_operator_superseded(coord_snap_);
+          }
           
         } 
         mutex_run_plan.unlock();         
+      }
+      if (request->cmd == 'h')
+      {
+        // G6b.2: explicit coordination-hold recovery (nonconflicting with
+        // keyboard teleop 'r'=forward). Clears suppress and resumes plan.
+        mutex_run_plan.lock();
+        coord_suppress_cmd_ = false;
+        run_control_plan = true;
+        mutex_run_plan.unlock();
+        cout << "control-> request received: Recover coordination hold "
+                "(plan resume)" << endl;
+        RCLCPP_INFO(
+          this->get_logger(),
+          "[G6b-TXN] operator hold recovery via SimpleServ 'h'");
       }
       if (request->cmd == 'i')
       { 
@@ -510,12 +658,20 @@ namespace control
         mutex_run_plan.lock();
             run_control_plan = false;
         mutex_run_plan.unlock();
+        {
+          std::lock_guard<std::mutex> lock(mutex_coord_);
+          g6_coord::mark_operator_superseded(coord_snap_);
+          coord_suppress_cmd_ = false;
+        }
         // A6: invalidate radius before/with EKF re-init; re-arm on next odometry.
         invalidate_cached_radius(true);
         reinit_control();
       }
       if (request->cmd == 'c')
       {
+        // Legacy close-loop interrupt (go_home re-nav). G6a coordinated path
+        // prefers CorrectionCoordinate release with signal_close_loop instead
+        // of also sending this command (avoid double completion actions).
         cout << "control-> request received: Close loop detected" << endl;
         mutex_cl.lock();
           cl_flag = true;
@@ -523,6 +679,198 @@ namespace control
       }
 
    }
+
+  void ControlQuad::publish_zero_twist()
+  {
+    auto twist_msg = geometry_msgs::msg::Twist();
+    pub_cmd_vel_->publish(twist_msg);
+  }
+
+  bool ControlQuad::wait_cmd_quiescent(std::chrono::milliseconds timeout)
+  {
+    // Plan command routines clear in_plan_command_ on exit; suppress forces
+    // zero twist while they wind down. Acknowledgement ≠ vehicle speed zero.
+    std::unique_lock<std::mutex> lock(mutex_coord_);
+    return cv_coord_quiet_.wait_for(lock, timeout, [this]() {
+      return !in_plan_command_.load();
+    });
+  }
+
+  void ControlQuad::Handle_correction_coordinate(
+    const std::shared_ptr<interfaces::srv::CorrectionCoordinate::Request> request,
+    std::shared_ptr<interfaces::srv::CorrectionCoordinate::Response> response)
+  {
+    using slam_identity::from_msg;
+    g6_coord::TxnIdentity req;
+    req.session_id = from_msg(request->session_id);
+    req.epoch_id = request->epoch_id;
+    req.transaction_id = request->transaction_id;
+    req.owner_generation = request->owner_generation;
+
+    response->success = false;
+    response->state = "idle";
+    response->reason.clear();
+    response->plan_was_active = false;
+    response->plan_resumed = false;
+    response->cmd_source_quiescent = false;
+    response->active_transaction_id = 0;
+    response->active_owner_generation = 0;
+
+    const std::string op = request->operation;
+    g6_coord::CoordResult result;
+
+    if (op == "prepare_pause") {
+      bool plan_active = false;
+      {
+        std::lock_guard<std::mutex> lock_run(mutex_run_plan);
+        plan_active = run_control_plan;
+        // Hold plan progression for this transaction (not physical hover).
+        run_control_plan = false;
+      }
+      coord_suppress_cmd_ = true;
+      publish_zero_twist();
+      {
+        std::lock_guard<std::mutex> lock(mutex_coord_);
+        result = g6_coord::prepare_pause(
+          coord_snap_, req, plan_active, !in_plan_command_.load());
+      }
+      if (!result.cmd_source_quiescent) {
+        const bool quiet = wait_cmd_quiescent(std::chrono::milliseconds(1500));
+        publish_zero_twist();
+        std::lock_guard<std::mutex> lock(mutex_coord_);
+        result = g6_coord::prepare_pause(
+          coord_snap_, req, coord_snap_.plan_was_active, quiet);
+        result.cmd_source_quiescent = quiet;
+        result.success = quiet;
+        if (!quiet) {
+          result.reason = "cmd_quiescence_timeout";
+        }
+      }
+    } else if (op == "release") {
+      bool resume = false;
+      {
+        std::lock_guard<std::mutex> lock(mutex_coord_);
+        // Resume only if this release matches the pause identity (GS must not
+        // release across Local SLAM session/epoch changes).
+        const bool id_ok = g6_coord::same_txn(coord_snap_.active, req);
+        // Odometry feedback: refuse resume-capable release until Control has
+        // accepted the required corrected snapshot (or newer compatible).
+        // GT feedback does not require corrected odometry for resumption.
+        const bool odom_fb =
+          PAR.Slam_feedback && PAR.Slam_feedback_interface == "odometry";
+        if (request->resume_plan_if_owned && odom_fb) {
+          const bool barrier_ok =
+            feedback_barrier_.accepted &&
+            feedback_barrier_.correction_id == req.transaction_id &&
+            slam_identity::equal(feedback_barrier_.session_id, req.session_id) &&
+            feedback_barrier_.epoch_id == req.epoch_id;
+          if (!barrier_ok) {
+            result = g6_coord::fill_from(
+              coord_snap_, false, "feedback_barrier_not_satisfied");
+            result.cmd_source_quiescent = !in_plan_command_.load();
+            response->success = result.success;
+            response->state = g6_coord::state_name(result.state);
+            response->reason = result.reason;
+            response->plan_was_active = result.plan_was_active;
+            response->plan_resumed = false;
+            response->cmd_source_quiescent = result.cmd_source_quiescent;
+            response->active_transaction_id = result.active_transaction_id;
+            response->active_owner_generation = result.active_owner_generation;
+            RCLCPP_WARN(
+              this->get_logger(),
+              "CorrectionCoordinate release blocked: feedback barrier "
+              "not satisfied for txn=%llu",
+              static_cast<unsigned long long>(req.transaction_id));
+            return;
+          }
+        }
+        result = g6_coord::release(
+          coord_snap_, req, request->resume_plan_if_owned, id_ok);
+        resume = result.plan_resumed;
+        if (result.success) {
+          coord_suppress_cmd_ = false;
+          // Barrier is consumed with a successful release of this txn.
+          if (feedback_barrier_.correction_id == req.transaction_id) {
+            g6_feedback::clear_barrier(feedback_barrier_);
+          }
+        }
+      }
+      if (result.success && request->signal_close_loop) {
+        std::lock_guard<std::mutex> lock_cl(mutex_cl);
+        cl_flag = true;
+      }
+      if (resume) {
+        std::lock_guard<std::mutex> lock_run(mutex_run_plan);
+        run_control_plan = true;
+        RCLCPP_INFO(
+          this->get_logger(),
+          "[G6b-TXN] plan resumed after feedback barrier txn=%llu",
+          static_cast<unsigned long long>(req.transaction_id));
+      }
+    } else if (op == "abort") {
+      bool resume = false;
+      {
+        std::lock_guard<std::mutex> lock(mutex_coord_);
+        // resume_plan_if_owned: only definite non-application (GS). Applied
+        // but unresolved feedback must not resume odometry control.
+        result = g6_coord::abort_txn(
+          coord_snap_, req, request->resume_plan_if_owned);
+        if (result.success) {
+          if (feedback_barrier_.correction_id == req.transaction_id) {
+            g6_feedback::clear_barrier(feedback_barrier_);
+          }
+          resume = result.plan_resumed;
+          if (resume) {
+            // Definite non-application: allow parked commands to continue.
+            coord_suppress_cmd_ = false;
+          } else {
+            // Unresolved/applied hold: keep suppress armed so go_point park
+            // does not treat this as OperatorStop (would return false and
+            // advance/stop the plan). Operator 'r' clears suppress.
+            coord_suppress_cmd_ = true;
+          }
+        }
+      }
+      if (resume) {
+        std::lock_guard<std::mutex> lock_run(mutex_run_plan);
+        run_control_plan = true;
+        RCLCPP_INFO(
+          this->get_logger(),
+          "[G6b-TXN] plan resumed after abort (non-applied) txn=%llu",
+          static_cast<unsigned long long>(req.transaction_id));
+      } else if (result.success) {
+        RCLCPP_WARN(
+          this->get_logger(),
+          "[G6b-TXN] abort without plan resume txn=%llu "
+          "(unresolved/applied hold or idle plan) — recover with "
+          "SimpleServ 'h' (keyboard: not teleop 'r'; use operator hold-recover)",
+          static_cast<unsigned long long>(req.transaction_id));
+      }
+    } else if (op == "query") {
+      std::lock_guard<std::mutex> lock(mutex_coord_);
+      result = g6_coord::query(coord_snap_, req);
+      result.cmd_source_quiescent = !in_plan_command_.load() && !coord_suppress_cmd_.load();
+    } else {
+      result.success = false;
+      result.reason = "unknown_operation";
+      result.state = g6_coord::State::Idle;
+    }
+
+    response->success = result.success;
+    response->state = g6_coord::state_name(result.state);
+    response->reason = result.reason;
+    response->plan_was_active = result.plan_was_active;
+    response->plan_resumed = result.plan_resumed;
+    response->cmd_source_quiescent = result.cmd_source_quiescent;
+    response->active_transaction_id = result.active_transaction_id;
+    response->active_owner_generation = result.active_owner_generation;
+    RCLCPP_INFO(
+      this->get_logger(),
+      "CorrectionCoordinate op=%s success=%d state=%s reason=%s txn=%llu",
+      op.c_str(), result.success ? 1 : 0, response->state.c_str(),
+      result.reason.c_str(),
+      static_cast<unsigned long long>(request->transaction_id));
+  }
 
   void ControlQuad::SaveScreenShot()
   {

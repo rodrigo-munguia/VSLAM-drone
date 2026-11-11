@@ -1,6 +1,11 @@
 #include "gmap.hpp"
+#include "gmap_ba_audit_log.hpp"
+#include "gmap_landmark_audit_log.hpp"
+#include "gmap_ba_replay_dump.hpp"
+#include "gmap_ba_d5_log.hpp"
 
-
+#include <array>
+#include <chrono>
 
 // Camera observations of landmarks (i.e. pixel coordinates) will be stored as Point2 (x, y).
 #include <gtsam/geometry/Point2.h>
@@ -214,9 +219,34 @@ void GMAP::Bundle_adjustment()
 
   
     /* Optimize the graph and print results */
+  // Audit-only full-window dump for offline replay (GSLAM_BA_REPLAY_DIR).
+  // Captures pre-optimize state so each threshold can restart from the same inputs.
+  static int ba_replay_id = 0;
+  if (gmap_ba_replay::enabled()) {
+    ++ba_replay_id;
+    gmap_ba_replay::dump_window(
+      ba_replay_id, Gmap, idx_kf_to_optimize, idx_points, cam_parameters,
+      PAR.BA_sigma_uv, PAR.BA_sigma_kf_att, PAR.BA_sigma_kf_xy, PAR.BA_sigma_kf_z,
+      PAR.BA_sigma_kf_pt, PAR.BA_max_delta_kf_pos);
+  }
+
   //gtsam::Values result = gtsam::DoglegOptimizer(graph, initial).optimize();
+  const auto ba_t0 = std::chrono::steady_clock::now();
   gtsam::Values result = gtsam::LevenbergMarquardtOptimizer(graph, initial).optimize();
+  const auto ba_t1 = std::chrono::steady_clock::now();
+  const double ba_elapsed_s =
+    std::chrono::duration<double>(ba_t1 - ba_t0).count();
   //result.print("Final results:\n");
+
+  // Audit-only residual snapshots (no-ops unless GSLAM_BA_AUDIT_DIR is set).
+  gmap_ba_audit::ResidualStats pre_stats;
+  gmap_ba_audit::ResidualStats post_stats;
+  if (gmap_ba_audit::enabled()) {
+    pre_stats = gmap_ba_audit::compute_residual_stats(
+      Gmap, idx_kf_to_optimize, cam_parameters, K, nullptr);
+    post_stats = gmap_ba_audit::compute_residual_stats(
+      Gmap, idx_kf_to_optimize, cam_parameters, K, &result);
+  }
   
   /*
   cout << "---- bundle adjustment results ---------------- " << endl;
@@ -233,6 +263,8 @@ void GMAP::Bundle_adjustment()
     //--- check for large innovations
     int idx_last_kf = Gmap.KeyFDATA.size()-1;
     bool f_valid_update = true;
+    std::vector<std::array<double, 6>> kf_deltas;
+    kf_deltas.reserve(idx_kf_to_optimize.size());
     for (int k = 0 ; k < idx_kf_to_optimize.size(); k++)
     {   
       int idx_kf = idx_kf_to_optimize[k];
@@ -245,7 +277,8 @@ void GMAP::Bundle_adjustment()
       arma::vec::fixed<3> D_kf_n;      
       D_kf_n[0] = t_o[0] - Gmap.KeyFDATA[idx_kf].t_c2n[0];
       D_kf_n[1] = t_o[1] - Gmap.KeyFDATA[idx_kf].t_c2n[1];
-      D_kf_n[2] = t_o[2] - Gmap.KeyFDATA[idx_kf].t_c2n[2];         
+      D_kf_n[2] = t_o[2] - Gmap.KeyFDATA[idx_kf].t_c2n[2];
+      kf_deltas.push_back({D_kf_n[0], D_kf_n[1], D_kf_n[2], 0.0, 0.0, 0.0});
       //double Delta_norm = arma::norm(D_kf_n, 2);
       double Delta_norm = sqrt(pow(D_kf_n[0],2) + pow(D_kf_n[1],2)); 
       if (Delta_norm > PAR.BA_max_delta_kf_pos)
@@ -255,6 +288,27 @@ void GMAP::Bundle_adjustment()
       }      
     }    
     //-----------------------------------
+
+    if (gmap_ba_audit::enabled() || gmap_landmark_audit::enabled()) {
+      // Keep BA summary IDs aligned with replay dump IDs when both are enabled.
+      static int ba_audit_seq = 0;
+      const int ba_audit_id =
+        gmap_ba_replay::enabled() ? ba_replay_id : (++ba_audit_seq);
+      const double wall_s =
+        std::chrono::duration<double>(
+          std::chrono::system_clock::now().time_since_epoch()).count();
+      // Dump uses pre-commit map poses for "before"; optimized Values for post residuals.
+      if (gmap_ba_audit::enabled()) {
+        gmap_ba_audit::append_window_jsonl(
+          ba_audit_id, wall_s, Gmap, idx_kf_to_optimize, idx_points,
+          cam_parameters, K, graph, initial, result, f_valid_update,
+          pre_stats, post_stats, ba_elapsed_s, kf_deltas, f_valid_update);
+      }
+      if (gmap_landmark_audit::enabled()) {
+        gmap_landmark_audit::append_ba_obs_pre_jsonl(
+          ba_audit_id, f_valid_update, Gmap, idx_kf_to_optimize, cam_parameters);
+      }
+    }
 
 
 
@@ -272,7 +326,10 @@ void GMAP::Bundle_adjustment()
       arma::mat R_arma_t = arma::mat(R.data(), R.rows(), R.cols(),false, false);
       arma::mat::fixed<3,3> R_o = R_arma_t.t();
       
-      if(idx_kf == idx_last_kf)
+      // Only capture a correction delta when the BA result will be committed.
+      // Rejected updates previously still set Delta_kf_n from the rejected
+      // optimizer pose while leaving KeyFDATA/AnchorsDATA unchanged.
+      if(idx_kf == idx_last_kf && f_valid_update == true)
       {
         Delta_kf_n[0] = t_o[0] - Gmap.KeyFDATA[idx_last_kf].t_c2n[0];
         Delta_kf_n[1] = t_o[1] - Gmap.KeyFDATA[idx_last_kf].t_c2n[1];
@@ -299,6 +356,13 @@ void GMAP::Bundle_adjustment()
      
     }  
 
+  if (!f_valid_update) {
+    // Rejection: map poses/landmarks were not committed; clear any stale
+    // correction delta so callers do not dispatch a rejected BA jump.
+    Delta_kf_n.zeros();
+    cout << "BA update rejected (Delta_norm gate); Delta_kf_n cleared" << endl;
+  }
+
   if(PAR.BA_update_map== true && f_valid_update == true)
   {
     for( int i = 0; i < idx_points.size(); i++)
@@ -312,6 +376,13 @@ void GMAP::Bundle_adjustment()
        Gmap.AnchorsDATA[idx_pt].AnchorState[2] = pt[2];
 
     }    
+  }
+
+  // BA-D5: log poses after accept/reject decision (post-commit state for accepts).
+  if (gmap_ba_d5::enabled()) {
+    static int ba_d5_id = 0;
+    ++ba_d5_id;
+    gmap_ba_d5::dump_ba_commit(ba_d5_id, f_valid_update, Gmap, idx_kf_to_optimize);
   }
   //----------------------------------------------------------------------
    //cout << "last kf optimized pose:      " <<Gmap.KeyFDATA[Gmap.KeyFDATA.size()-1].t_c2n.t() << endl;

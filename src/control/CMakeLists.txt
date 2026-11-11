@@ -85,6 +85,21 @@ if(BUILD_TESTING)
     if(TARGET test_odometry_radius_feedback)
       target_include_directories(test_odometry_radius_feedback PRIVATE src)
     endif()
+
+    ament_add_gtest(test_g6_coord_policy test/test_g6_coord_policy.cpp)
+    if(TARGET test_g6_coord_policy)
+      target_include_directories(test_g6_coord_policy PRIVATE src ../common)
+    endif()
+
+    ament_add_gtest(test_g6_feedback_barrier test/test_g6_feedback_barrier.cpp)
+    if(TARGET test_g6_feedback_barrier)
+      target_include_directories(test_g6_feedback_barrier PRIVATE src ../common)
+    endif()
+
+    ament_add_gtest(test_g6b_plan_interrupt test/test_g6b_plan_interrupt.cpp)
+    if(TARGET test_g6b_plan_interrupt)
+      target_include_directories(test_g6b_plan_interrupt PRIVATE src)
+    endif()
   endif()
 endif()
 

@@ -231,7 +231,30 @@
 # Global slam component parameters     
 /gslam:
   ros__parameters:
-    # Monocular camera intrinsic parameters
+    # G6d: independent processing vs Local feedback (all feedback default off).
+    Enable_global_ba: true
+    Enable_tag_loop_closure: true
+    Enable_visual_loop_closure: false
+    Apply_ba_corrections: false
+    Apply_tag_loop_corrections: true
+    Apply_visual_loop_corrections: false
+    # Compatibility master: launch --global-corrections true forces Apply_* for
+    # enabled sources only (never enables visual processing by itself).
+    Apply_global_corrections: false
+    # Standalone defaults disabled; integrated ./launch2.sh --globalslam true
+    # forces Processing_start_enabled=true at launch.
+    Processing_start_enabled: false
+    # G6a/G6b coordination (dormant while no Apply_* feedback is enabled).
+    # Integrated Local feedback rejects absent_ok / offline_bypass.
+    Coordinate_mode: required
+    Coordinate_pause_timeout_ms: 2000
+    Coordinate_feedback_barrier_timeout_ms: 5000
+    # G4 public visualization (same parent as Local SLAM odometry; not a map frame).
+    Public_frame_id: odom
+    # 0 = publish full committed snapshot (limits apply to viz copies only).
+    Path_max_poses: 0
+    Landmark_cloud_max_points: 0
+    # Monocular camera intrinsic parameters (must match /lslam for integrated G4)
     Mono_cam_img_rows: 240
     Mono_cam_img_cols: 400
     Mono_cam_distortions: [0.0, 0.0, 0.0, 0.0, 0.00000]
@@ -247,6 +270,10 @@
     Init_number_candidate_points_per_kf: 1000 #2500
     Init_min_distance_to_previous_mapped_features: 1
     Init_min_depth_to_consider: .2
+    # Birth reprojection gate (INIT-D4 → production default ON; D2–D6 validated).
+    # Override off: Init_birth_reproj_gate_enable:=false or GSLAM_INIT_BIRTH_REPROJ_GATE_ENABLE=0
+    Init_birth_reproj_gate_enable: true
+    Init_birth_reproj_max_rms_px: 20.0
     # visual match
     VM_max_inov_error: 30
     # Visibility graph
@@ -306,6 +333,20 @@
     # For using an Aruco tag for CL  
     CL_tag_max_xy_dis: 6.0
     CL_tag_max_xy_dis_px: 90
+
+    # G6b.3: epoch-owned home-tag POSITION capture during RecHome
+    # CL_home_tag_id: ArUco ID (mars.wbt marker23.png → 23)
+    CL_home_tag_id: 23
+    # CL_home_tag_size_m: marker side length [m] (matches SolidBox 1×1)
+    CL_home_tag_size_m: 1.0
+    # CL_home_capture_min_inliers: minimum accepted unique KF samples (≥1)
+    CL_home_capture_min_inliers: 3
+    # CL_home_capture_min_inlier_fraction: inliers/candidates in (0,1]
+    CL_home_capture_min_inlier_fraction: 0.5
+    # CL_home_capture_max_spread_m: Euclidean reject/final residual [m]
+    CL_home_capture_max_spread_m: 1.5
+    # CL_home_capture_max_samples: unique KF candidate cap
+    CL_home_capture_max_samples: 40
     # Activate/Deactivate statistics 
     Stats: true  
     

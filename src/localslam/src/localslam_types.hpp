@@ -7,6 +7,8 @@ Rodrigo Munguía 2020.
 Get data from data base
 -----------------------------------------------------
 */
+#include <array>
+#include <cstdint>
 #include <string>
 #include "opencv2/opencv.hpp"
 #include <fstream>
@@ -145,10 +147,24 @@ struct LOCALSLAM_DATA
 
 struct POS_UPDATE
 {
-    bool pos_update_available;
+    bool pos_update_available{false};
     arma::vec::fixed<3> delta_pos_update;
     string type;
+    /** G6d: "ba" | "tag_loop" | "visual_loop" (empty allowed for legacy). */
+    string source;
+    // G3 identity captured at service admission; re-checked at EKF apply.
+    std::array<uint8_t, 16> session_id{};
+    uint64_t epoch_id{0};
+    uint64_t keyframe_id{0};
+    uint64_t correction_id{0};
 
+    // G5/G6a: filled by EKF worker; service waits on cv (mutex_pos_update).
+    bool result_ready{false};
+    bool result_applied{false};
+    arma::vec::fixed<3> applied_delta;
+    std::string outcome;  // applied | gated_noop | reset_before_apply | cancelled | ...
+    /** G6a: set under mutex on service timeout while still pending — worker must not mutate. */
+    bool cancel_requested{false};
 };
 
     

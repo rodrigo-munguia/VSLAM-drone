@@ -10,11 +10,18 @@
 #   ./launch2.sh --viewer plot2
 #   ./launch2.sh --viewer rviz2
 #   ./launch2.sh --viewer none
+#   ./launch2.sh --globalslam true
+#   ./launch2.sh --globalslam true --global-corrections true
+#   ./launch2.sh --globalslam true --apply-tag-loop-corrections true
+#   ./launch2.sh --globalslam true --apply-ba-corrections false \
+#       --apply-tag-loop-corrections true
 #   ./launch2.sh --world mars.wbt --slam-feedback false
 #   EKF_INSTALL_BASE=install ./launch2.sh
 #
 # Standalone Local SLAM (no Webots) remains:
 #   ros2 launch localslam localslam.launch.py ...
+# Standalone Global SLAM:
+#   ros2 launch globalslam globalslam.launch.py
 #
 set -euo pipefail
 
@@ -23,6 +30,15 @@ cd "$ROOT"
 
 WORLD="mars.wbt"
 VIEWER="plot2"
+GLOBALSLAM="false"
+# Empty = omit launch override (YAML Apply_global_corrections / Apply_* win).
+GLOBAL_CORRECTIONS=""
+ENABLE_GLOBAL_BA=""
+ENABLE_TAG_LOOP=""
+ENABLE_VISUAL_LOOP=""
+APPLY_BA_CORR=""
+APPLY_TAG_CORR=""
+APPLY_VISUAL_CORR=""
 SLAM_FEEDBACK=""
 SLAM_FEEDBACK_IFACE=""
 PARAMS_FILE=""
@@ -36,9 +52,32 @@ Usage: ./launch2.sh [options]
 
   --world NAME.wbt           Webots world (default: mars.wbt)
   --viewer plot2|rviz2|none  Visualization (default: plot2)
-  --slam-feedback true|false Override control Slam_feedback
+  --globalslam true|false    Opt-in Global SLAM (default: false)
+  --global-corrections true|false
+                             Compatibility master. Omitted = leave YAML.
+                             true: force Apply_* for each enabled source
+                             (never enables visual processing). Explicit
+                             --apply-*-corrections false with master true → error.
+                             false: clear Apply_global_corrections only.
+                             Requires --globalslam true when true.
+  --enable-global-ba true|false
+  --enable-tag-loop-closure true|false
+  --enable-visual-loop-closure true|false
+                             Per-source global processing. Omitted = YAML
+                             (shipped: ba=true, tag=true, visual=false).
+                             Tag+visual both true → reject.
+  --apply-ba-corrections true|false
+  --apply-tag-loop-corrections true|false
+  --apply-visual-loop-corrections true|false
+                             Per-source Local SLAM feedback. Omitted = YAML
+                             (shipped: all false). Feedback requires its
+                             source processing. Effective Apply_*=true →
+                             Coordinate_mode=required.
+  --slam-feedback true|false Override control Slam_feedback (nav pose; NOT corrections).
+                             Omitted = YAML.
   --slam-feedback-interface odometry|legacy
-  --params-file PATH         Unused placeholder (edit config/ + reinstall bringup)
+                             Omitted = YAML.
+  --params-file PATH         Absolute YAML for bringup (default: installed quad_params.yaml)
   --control-plan PATH        Absolute path override for Control_plan_path
   --no-plot2                 Compatibility alias for --viewer none
   --no-webots                Do not spawn Webots (app+keyboard only)
@@ -49,7 +88,16 @@ Environment:
   EKF_INSTALL_BASE   Install overlay under repo (default: install)
   WEBOTS_HOME        Webots install (auto-detected if unset)
   ROS_DISTRO         Expected jazzy
+  GTSAM / LD_LIBRARY_PATH   Required when --globalslam true (see tools/gtsam_prefix.env.example)
 EOF
+}
+
+normalize_bool() {
+  case "$1" in
+    true|1|yes) echo true ;;
+    false|0|no) echo false ;;
+    *) return 1 ;;
+  esac
 }
 
 while [[ $# -gt 0 ]]; do
@@ -59,6 +107,14 @@ while [[ $# -gt 0 ]]; do
       VIEWER="$2"
       shift 2
       ;;
+    --globalslam) GLOBALSLAM="$2"; shift 2 ;;
+    --global-corrections) GLOBAL_CORRECTIONS="$2"; shift 2 ;;
+    --enable-global-ba) ENABLE_GLOBAL_BA="$2"; shift 2 ;;
+    --enable-tag-loop-closure) ENABLE_TAG_LOOP="$2"; shift 2 ;;
+    --enable-visual-loop-closure) ENABLE_VISUAL_LOOP="$2"; shift 2 ;;
+    --apply-ba-corrections) APPLY_BA_CORR="$2"; shift 2 ;;
+    --apply-tag-loop-corrections) APPLY_TAG_CORR="$2"; shift 2 ;;
+    --apply-visual-loop-corrections) APPLY_VISUAL_CORR="$2"; shift 2 ;;
     --slam-feedback) SLAM_FEEDBACK="$2"; shift 2 ;;
     --slam-feedback-interface) SLAM_FEEDBACK_IFACE="$2"; shift 2 ;;
     --params-file) PARAMS_FILE="$2"; shift 2 ;;
@@ -70,6 +126,115 @@ while [[ $# -gt 0 ]]; do
     *) echo "Unknown option: $1"; usage; exit 1 ;;
   esac
 done
+
+if ! GLOBALSLAM="$(normalize_bool "$GLOBALSLAM")"; then
+  echo "error: --globalslam must be true|false (got: $GLOBALSLAM)"
+  exit 1
+fi
+
+normalize_opt_bool() {
+  local name="$1" val="$2"
+  if [[ -z "$val" ]]; then
+    echo ""
+    return 0
+  fi
+  if ! normalize_bool "$val" >/dev/null; then
+    echo "error: $name must be true|false (got: $val)" >&2
+    exit 1
+  fi
+  normalize_bool "$val"
+}
+if [[ -n "$GLOBAL_CORRECTIONS" ]]; then
+  if ! GLOBAL_CORRECTIONS="$(normalize_bool "$GLOBAL_CORRECTIONS")"; then
+    echo "error: --global-corrections must be true|false (got: $GLOBAL_CORRECTIONS)"
+    exit 1
+  fi
+fi
+ENABLE_GLOBAL_BA="$(normalize_opt_bool --enable-global-ba "$ENABLE_GLOBAL_BA")"
+ENABLE_TAG_LOOP="$(normalize_opt_bool --enable-tag-loop-closure "$ENABLE_TAG_LOOP")"
+ENABLE_VISUAL_LOOP="$(normalize_opt_bool --enable-visual-loop-closure "$ENABLE_VISUAL_LOOP")"
+APPLY_BA_CORR="$(normalize_opt_bool --apply-ba-corrections "$APPLY_BA_CORR")"
+APPLY_TAG_CORR="$(normalize_opt_bool --apply-tag-loop-corrections "$APPLY_TAG_CORR")"
+APPLY_VISUAL_CORR="$(normalize_opt_bool --apply-visual-loop-corrections "$APPLY_VISUAL_CORR")"
+
+# YAML baselines for omitted flags (CLI > YAML; never invent hard-coded enables).
+YAML_GSLAM="$ROOT/config/quad_params.yaml"
+yaml_gslam_bool() {
+  local key="$1" default="$2"
+  if [[ ! -f "$YAML_GSLAM" ]]; then
+    echo "$default"
+    return 0
+  fi
+  python3 - "$YAML_GSLAM" "$key" "$default" <<'PY'
+import sys, yaml
+path, key, default = sys.argv[1], sys.argv[2], sys.argv[3]
+with open(path) as f:
+    raw = yaml.safe_load(f) or {}
+params = (raw.get('/gslam') or {}).get('ros__parameters') or {}
+v = params.get(key, default)
+print('true' if str(v).lower() in ('1', 'true', 'yes') else 'false')
+PY
+}
+EFF_BA="${ENABLE_GLOBAL_BA:-$(yaml_gslam_bool Enable_global_ba true)}"
+EFF_TAG="${ENABLE_TAG_LOOP:-$(yaml_gslam_bool Enable_tag_loop_closure true)}"
+EFF_VIS="${ENABLE_VISUAL_LOOP:-$(yaml_gslam_bool Enable_visual_loop_closure false)}"
+EFF_APPLY_BA="${APPLY_BA_CORR:-$(yaml_gslam_bool Apply_ba_corrections false)}"
+EFF_APPLY_TAG="${APPLY_TAG_CORR:-$(yaml_gslam_bool Apply_tag_loop_corrections false)}"
+EFF_APPLY_VIS="${APPLY_VISUAL_CORR:-$(yaml_gslam_bool Apply_visual_loop_corrections false)}"
+if [[ "$GLOBAL_CORRECTIONS" == "true" ]]; then
+  [[ "$EFF_BA" == "true" ]] && EFF_APPLY_BA=true
+  [[ "$EFF_TAG" == "true" ]] && EFF_APPLY_TAG=true
+  [[ "$EFF_VIS" == "true" ]] && EFF_APPLY_VIS=true
+fi
+
+if [[ "$GLOBAL_CORRECTIONS" == "true" && "$GLOBALSLAM" != "true" ]]; then
+  echo "error: --global-corrections true requires --globalslam true"
+  exit 1
+fi
+if [[ "$EFF_TAG" == "true" && "$EFF_VIS" == "true" ]]; then
+  echo "error: Enable_tag_loop_closure and Enable_visual_loop_closure cannot both be true"
+  echo "  (no simultaneous loop-source arbitration in this slice). Pick one."
+  exit 1
+fi
+if [[ "$EFF_APPLY_BA" == "true" && "$EFF_BA" != "true" ]]; then
+  echo "error: Apply_ba_corrections requires Enable_global_ba"
+  exit 1
+fi
+if [[ "$EFF_APPLY_TAG" == "true" && "$EFF_TAG" != "true" ]]; then
+  echo "error: Apply_tag_loop_corrections requires Enable_tag_loop_closure"
+  exit 1
+fi
+if [[ "$EFF_APPLY_VIS" == "true" && "$EFF_VIS" != "true" ]]; then
+  echo "error: Apply_visual_loop_corrections requires Enable_visual_loop_closure"
+  exit 1
+fi
+# Master + explicit per-source false is a hard conflict (no silent override).
+if [[ "$GLOBAL_CORRECTIONS" == "true" ]]; then
+  if [[ "$APPLY_BA_CORR" == "false" && "$EFF_BA" == "true" ]]; then
+    echo "error: contradictory: --global-corrections true with --apply-ba-corrections false"
+    exit 1
+  fi
+  if [[ "$APPLY_TAG_CORR" == "false" && "$EFF_TAG" == "true" ]]; then
+    echo "error: contradictory: --global-corrections true with --apply-tag-loop-corrections false"
+    exit 1
+  fi
+  if [[ "$APPLY_VISUAL_CORR" == "false" && "$EFF_VIS" == "true" ]]; then
+    echo "error: contradictory: --global-corrections true with --apply-visual-loop-corrections false"
+    exit 1
+  fi
+fi
+CLI_APPLY=false
+if [[ "$GLOBAL_CORRECTIONS" == "true" || "$APPLY_BA_CORR" == "true" || "$APPLY_TAG_CORR" == "true" || "$APPLY_VISUAL_CORR" == "true" ]]; then
+  CLI_APPLY=true
+fi
+if [[ "$CLI_APPLY" == "true" && "$GLOBALSLAM" != "true" ]]; then
+  echo "error: Local feedback / --global-corrections true requires --globalslam true"
+  exit 1
+fi
+ANY_APPLY=false
+if [[ "$EFF_APPLY_BA" == "true" || "$EFF_APPLY_TAG" == "true" || "$EFF_APPLY_VIS" == "true" || "$GLOBAL_CORRECTIONS" == "true" ]]; then
+  ANY_APPLY=true
+fi
 
 case "$VIEWER" in
   plot2|rviz2|none) ;;
@@ -94,8 +259,25 @@ if [[ ! -f "$INSTALL_DIR/setup.bash" ]]; then
   echo "    --packages-select interfaces localslam webotbridge control \\"
   echo "      ekf_monoslam_bringup webot_package plot2 keyboard \\"
   echo "    --build-base build --install-base install"
+  echo "With Global SLAM, also build globalslam (GTSAM on CMAKE_PREFIX_PATH)."
   echo "Or set EKF_INSTALL_BASE to an existing overlay."
   exit 1
+fi
+
+if [[ "$GLOBALSLAM" == "true" ]]; then
+  # Merged install: install/share/globalslam
+  # Isolated install: install/globalslam/share/globalslam
+  if [[ ! -d "$INSTALL_DIR/share/globalslam" &&
+        ! -d "$INSTALL_DIR/globalslam/share/globalslam" ]]; then
+    echo "error: --globalslam true but globalslam is not in $INSTALL_DIR"
+    echo "Build globalslam with GTSAM visible, e.g.:"
+    echo "  set -a && source tools/gtsam_prefix.env && set +a"
+    echo "  source /opt/ros/jazzy/setup.bash"
+    echo "  colcon build --packages-select interfaces globalslam \\"
+    echo "    --build-base build --install-base install"
+    echo "Keep LD_LIBRARY_PATH so libgtsam resolves at runtime."
+    exit 1
+  fi
 fi
 
 # ROS setup scripts reference optional unset vars; relax -u while sourcing.
@@ -239,7 +421,18 @@ if [[ "$VIEWER" == "rviz2" ]]; then
   open_term "EKF-RViz2" "$SETUP_CMD; ros2 launch ekf_monoslam_bringup rviz2_experiment.launch.py"
 fi
 
-LAUNCH_ARGS=(use_plot2:="$USE_PLOT2")
+LAUNCH_ARGS=(
+  use_plot2:="$USE_PLOT2"
+  use_globalslam:="$GLOBALSLAM"
+)
+# Omit empty overrides so ROS launch keeps YAML (CLI > YAML > node default).
+[[ -n "$GLOBAL_CORRECTIONS" ]] && LAUNCH_ARGS+=(global_corrections:="$GLOBAL_CORRECTIONS")
+[[ -n "$ENABLE_GLOBAL_BA" ]] && LAUNCH_ARGS+=(enable_global_ba:="$ENABLE_GLOBAL_BA")
+[[ -n "$ENABLE_TAG_LOOP" ]] && LAUNCH_ARGS+=(enable_tag_loop_closure:="$ENABLE_TAG_LOOP")
+[[ -n "$ENABLE_VISUAL_LOOP" ]] && LAUNCH_ARGS+=(enable_visual_loop_closure:="$ENABLE_VISUAL_LOOP")
+[[ -n "$APPLY_BA_CORR" ]] && LAUNCH_ARGS+=(apply_ba_corrections:="$APPLY_BA_CORR")
+[[ -n "$APPLY_TAG_CORR" ]] && LAUNCH_ARGS+=(apply_tag_loop_corrections:="$APPLY_TAG_CORR")
+[[ -n "$APPLY_VISUAL_CORR" ]] && LAUNCH_ARGS+=(apply_visual_loop_corrections:="$APPLY_VISUAL_CORR")
 if [[ -n "$SLAM_FEEDBACK" ]]; then
   LAUNCH_ARGS+=(slam_feedback:="$SLAM_FEEDBACK")
 fi
@@ -250,7 +443,39 @@ if [[ -n "$CONTROL_PLAN" ]]; then
   LAUNCH_ARGS+=(control_plan:="$CONTROL_PLAN")
 fi
 if [[ -n "$PARAMS_FILE" ]]; then
-  echo "note: --params-file ignored; edit config/quad_params.yaml and rebuild/reinstall ekf_monoslam_bringup"
+  if [[ ! -f "$PARAMS_FILE" ]]; then
+    echo "error: --params-file not found: $PARAMS_FILE"
+    exit 1
+  fi
+  # Require absolute path so composable nodes resolve independently of cwd.
+  if [[ "$PARAMS_FILE" != /* ]]; then
+    PARAMS_FILE="$(cd "$(dirname "$PARAMS_FILE")" && pwd)/$(basename "$PARAMS_FILE")"
+  fi
+  LAUNCH_ARGS+=(params_file:="$PARAMS_FILE")
+  echo "params_file=$PARAMS_FILE"
+fi
+
+FB_DESC="YAML default"
+if [[ -n "$SLAM_FEEDBACK" ]]; then
+  if [[ "$SLAM_FEEDBACK" == "true" || "$SLAM_FEEDBACK" == "1" || "$SLAM_FEEDBACK" == "yes" ]]; then
+    FB_DESC="odometry (${SLAM_FEEDBACK_IFACE:-odometry})"
+  else
+    FB_DESC="gt (Webots GPS)"
+  fi
+fi
+
+if [[ "$GLOBALSLAM" == "true" ]]; then
+  MASTER_DESC="${GLOBAL_CORRECTIONS:-YAML}"
+  echo "Global SLAM: ON"
+  echo "  G6d matrix (CLI>YAML): ba=${EFF_BA}/fb=${EFF_APPLY_BA} tag=${EFF_TAG}/fb=${EFF_APPLY_TAG} vis=${EFF_VIS}/fb=${EFF_APPLY_VIS} master=${MASTER_DESC}"
+  echo "  nav_feedback_mode=$FB_DESC (--slam-feedback is NOT Local corrections)"
+  if [[ "$ANY_APPLY" == "true" ]]; then
+    echo "  coordinated Local feedback ON (Coordinate_mode=required)"
+  else
+    echo "  Local feedback OFF; Path/cloud on /gslam/global_* ; GlobalLoopCommitted informational"
+  fi
+else
+  echo "Global SLAM: OFF (local-only default)"
 fi
 
 echo "Starting application container (status in this terminal)..."

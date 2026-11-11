@@ -52,6 +52,8 @@
 #include "map_path_conversions.hpp"
 #include "nav_msgs/msg/odometry.hpp"
 #include "camera_calibration.hpp"
+#include "ls_pos_update_policy.hpp"
+#include "../../common/ros_slam_identity.hpp"
 
 //#include <Matrix3x3.h>
 
@@ -123,6 +125,14 @@ EKFslam::EKFslam(const rclcpp::NodeOptions & options)
   // A4: changing local sparse map (XYZ) and bounded trajectory in odom parent.
   pub_landmarks_ = create_publisher<sensor_msgs::msg::PointCloud2>("~/landmarks", 10);
   pub_path_ = create_publisher<nav_msgs::msg::Path>("~/path", 10);
+  {
+    rclcpp::QoS qos_corr(rclcpp::KeepLast(1));
+    qos_corr.reliable();
+    qos_corr.transient_local();
+    pub_correction_applied_ =
+      create_publisher<interfaces::msg::CorrectionApplied>("~/correction_applied", qos_corr);
+  }
+  pub_odometry_meta_ = create_publisher<interfaces::msg::OdometryMeta>("~/odometry_meta", 10);
   path_msg_.header.frame_id = PAR.Odometry_frame_id;
   {
     rclcpp::QoS qos_ref(rclcpp::KeepLast(1));
@@ -131,6 +141,16 @@ EKFslam::EKFslam(const rclcpp::NodeOptions & options)
     pub_estimator_ref_ =
       create_publisher<interfaces::msg::EstimatorReference>("~/estimator_reference", qos_ref);
   }
+
+  // G3: session UUID once per component instance; initial invalid reference
+  // available before the first successful init (late-subscriber friendly).
+  estimator_session_id_ = slam_identity::random_uuid_v4();
+  estimator_epoch_id_ = 0;
+  publish_estimator_reference_invalid();
+  RCLCPP_INFO(
+    this->get_logger(),
+    "EstimatorReference session_id=%s (new component instance)",
+    slam_identity::to_string(estimator_session_id_).c_str());
 
   // Initialize worker flags before starting EKF_LOOP (avoid publishing on
   // null publishers if ekf_steps_loop_run were left uninitialized).
@@ -299,7 +319,8 @@ EKFslam::~EKFslam()
 void EKFslam::EKF_LOOP()
 {
   
-  EKF ekf(PAR); // create EKF object  
+  EKF ekf(PAR); // create EKF object
+  ekf.set_reference_identity(estimator_session_id_, estimator_epoch_id_);
   cout << "-> EKF-SLAM thread running... " << endl;   
 
   DATA dat;
@@ -327,6 +348,16 @@ void EKFslam::EKF_LOOP()
             // tell the ekf object that the system must be initialized again
             ekf.set_ekf_initialized_statet(false);         
             re_init_sys = false;
+            // Drop queued corrections under the same lock used at apply time.
+            {
+              std::lock_guard<std::mutex> lock_pos(mutex_pos_update);
+              clear_pending_pos_update_locked();
+              applied_correction_ids_.clear();
+            }
+            last_published_correction_id_ = 0;
+            // Keep EKF identity at current epoch until next successful init
+            // bumps epoch_id; clear any pre-reset KF still sitting in EKF.
+            ekf.set_reference_identity(estimator_session_id_, estimator_epoch_id_);
             // A4: clear trajectory and publish empty landmark cloud so consumers
             // drop the previous local map (custom Lslam still follows re-init).
             clear_and_publish_path();
@@ -359,7 +390,14 @@ void EKFslam::EKF_LOOP()
             const bool was_init = ekf.get_ekf_initialized_state();
             ekf.system_init(dat);
             if (!was_init && ekf.get_ekf_initialized_state()) {
-              ++estimator_epoch_id_;
+              {
+                std::lock_guard<std::mutex> lock_pos(mutex_pos_update);
+                ++estimator_epoch_id_;
+                applied_correction_ids_.clear();
+                clear_pending_pos_update_locked();
+              }
+              last_published_correction_id_ = 0;
+              ekf.set_reference_identity(estimator_session_id_, estimator_epoch_id_);
               epoch_heading_time_ms_ =
                 (dat.att.time != 0) ? dat.att.time : dat.time;
               epoch_yaw_at_home_ = ekf.get_yaw_at_home();
@@ -418,14 +456,106 @@ void EKFslam::EKF_LOOP()
                 //pub_lslam_Data(lslam_data);
              //-------------end publish data ----------------------------------------
              
-             // -- check if a position update is available from the global map component
-             mutex_pos_update.lock();
-              if(pos_update.pos_update_available == true)
-              {
-                pos_update.pos_update_available = false;
-                ekf.Update_pos_with_delta(pos_update.delta_pos_update,pos_update.type);
-              }
-             mutex_pos_update.unlock();
+             // -- apply queued Global SLAM Δ (re-validate identity under lock)
+             bool publish_correction_notice = false;
+             interfaces::msg::CorrectionApplied corr_notice;
+             {
+               std::lock_guard<std::mutex> lock_pos(mutex_pos_update);
+               if (pos_update.pos_update_available) {
+                 PosUpdateRequestView view;
+                 view.delta_x = pos_update.delta_pos_update[0];
+                 view.delta_y = pos_update.delta_pos_update[1];
+                 view.delta_z = pos_update.delta_pos_update[2];
+                 view.type = pos_update.type;
+                 view.source = pos_update.source;
+                 view.session_id = {};
+                 for (size_t i = 0; i < 16; ++i) {
+                   view.session_id[i] = pos_update.session_id[i];
+                 }
+                 view.epoch_id = pos_update.epoch_id;
+                 view.keyframe_id = pos_update.keyframe_id;
+                 view.correction_id = pos_update.correction_id;
+
+                 // Identity must still match at apply time. correction_id was
+                 // consumed at admission; do not re-insert into applied_ids.
+                 pos_update.pos_update_available = false;
+                 if (pos_update.cancel_requested) {
+                   pos_update.result_applied = false;
+                   pos_update.applied_delta.zeros();
+                   pos_update.outcome = "cancelled";
+                   pos_update.result_ready = true;
+                   cv_pos_update_.notify_all();
+                 } else {
+                 bool identity_ok =
+                   estimator_ref_published_valid_ &&
+                   slam_identity::equal(view.session_id, estimator_session_id_) &&
+                   view.epoch_id == estimator_epoch_id_;
+                 if (!identity_ok) {
+                   pos_update.result_applied = false;
+                   pos_update.applied_delta.zeros();
+                   pos_update.outcome = "reset_before_apply";
+                   pos_update.result_ready = true;
+                   cv_pos_update_.notify_all();
+                   RCLCPP_WARN(
+                     this->get_logger(),
+                     "LSposUpdate dropped at EKF apply: identity/reset "
+                     "(correction_id=%llu)",
+                     static_cast<unsigned long long>(view.correction_id));
+                 } else {
+                   const auto applied = ekf.Update_pos_with_delta(
+                     pos_update.delta_pos_update, pos_update.type);
+                   pos_update.result_applied = applied.applied;
+                   pos_update.applied_delta[0] = applied.applied_dx;
+                   pos_update.applied_delta[1] = applied.applied_dy;
+                   pos_update.applied_delta[2] = applied.applied_dz;
+                   pos_update.outcome = applied.applied ? "applied" : "gated_noop";
+                   pos_update.result_ready = true;
+                   cv_pos_update_.notify_all();
+                   // Publish corrected snapshot in this cycle (path keeps history;
+                   // past poses are not retroactively optimized — jump is expected).
+                   if (applied.applied) {
+                     last_published_correction_id_ = view.correction_id;
+                     arma::vec::fixed<13> x_corr;
+                     arma::mat::fixed<13, 13> P_corr;
+                     double ru_corr = 0.0;
+                     uint64_t snap_seq = 0;
+                     if (ekf.get_RobotStateSnapshot(x_corr, P_corr, ru_corr)) {
+                       pub_robot_state(x_corr, ru_corr);
+                       snap_seq = pub_odometry(x_corr, P_corr);
+                     }
+                     corr_notice.header.stamp = this->get_clock()->now();
+                     corr_notice.header.frame_id = PAR.Odometry_frame_id;
+                     corr_notice.session_id = slam_identity::to_msg(view.session_id);
+                     corr_notice.epoch_id = view.epoch_id;
+                     corr_notice.correction_id = view.correction_id;
+                     corr_notice.snapshot_seq = snap_seq;
+                     corr_notice.type = view.type;
+                     corr_notice.source = view.source;
+                     corr_notice.applied = true;
+                     corr_notice.applied_delta_x = applied.applied_dx;
+                     corr_notice.applied_delta_y = applied.applied_dy;
+                     corr_notice.applied_delta_z = applied.applied_dz;
+                     corr_notice.outcome = "applied";
+                     // Only advertise the barrier when a unique snapshot was published.
+                     publish_correction_notice = (snap_seq != 0);
+                     if (snap_seq != 0) {
+                       RCLCPP_INFO(
+                         this->get_logger(),
+                         "[G6b-TXN] CorrectionApplied correction_id=%llu "
+                         "snapshot_seq=%llu type=%s delta=[%.4f %.4f %.4f]",
+                         static_cast<unsigned long long>(view.correction_id),
+                         static_cast<unsigned long long>(snap_seq),
+                         view.type.c_str(),
+                         applied.applied_dx, applied.applied_dy, applied.applied_dz);
+                     }
+                   }
+                 }
+                 }
+               }
+             }
+             if (publish_correction_notice && pub_correction_applied_) {
+               pub_correction_applied_->publish(corr_notice);
+             }
 
              //-- check if log date is required
              mutex_log.lock();
@@ -514,7 +644,7 @@ void EKFslam::pub_robot_state(arma::vec::fixed<13> &x_r, double &radius_uncertai
 
 }
 
-bool EKFslam::pub_odometry(
+uint64_t EKFslam::pub_odometry(
   const arma::vec::fixed<13> & x_r,
   const arma::mat::fixed<13, 13> & P_r)
 {
@@ -532,13 +662,18 @@ bool EKFslam::pub_odometry(
     RCLCPP_WARN_THROTTLE(
       this->get_logger(), *this->get_clock(), 5000,
       "Skipping ~/odometry: %s", pub.reject_reason.c_str());
-    return false;
+    return 0;
   }
+
+  const uint64_t snapshot_seq = next_odometry_snapshot_seq_++;
+  last_odometry_snapshot_seq_ = snapshot_seq;
+  // One stamp shared by Odometry and OdometryMeta (association uses snapshot_seq).
+  const builtin_interfaces::msg::Time stamp = this->get_clock()->now();
 
   nav_msgs::msg::Odometry msg;
   // Publication-time stamp on the configured ROS clock (sim or system).
   // Prediction remains wall-clock-driven; this is not a measurement epoch.
-  msg.header.stamp = this->get_clock()->now();
+  msg.header.stamp = stamp;
   msg.header.frame_id = PAR.Odometry_frame_id;
   msg.child_frame_id = PAR.Odometry_child_frame_id;
 
@@ -565,6 +700,17 @@ bool EKFslam::pub_odometry(
 
   pub_odometry_->publish(msg);
 
+  if (pub_odometry_meta_) {
+    interfaces::msg::OdometryMeta meta;
+    meta.header.stamp = stamp;
+    meta.header.frame_id = PAR.Odometry_frame_id;
+    meta.snapshot_seq = snapshot_seq;
+    meta.session_id = slam_identity::to_msg(estimator_session_id_);
+    meta.epoch_id = estimator_epoch_id_;
+    meta.last_correction_id = last_published_correction_id_;
+    pub_odometry_meta_->publish(meta);
+  }
+
   // A4 path: same accepted snapshot, same stamp/frame/orientation as odometry.
   geometry_msgs::msg::PoseStamped ps;
   ps.header = msg.header;
@@ -572,7 +718,7 @@ bool EKFslam::pub_odometry(
   path_msg_.header = msg.header;
   map_path::append_path_pose(path_msg_, ps, PAR.Path_max_poses);
   pub_path_->publish(path_msg_);
-  return true;
+  return snapshot_seq;
 }
 
 void EKFslam::pub_landmarks_from_lslam(LOCALSLAM_DATA &lslam_data)
@@ -622,6 +768,34 @@ builtin_interfaces::msg::Time EKFslam::stamp_from_ms(long int time_ms)
   return t;
 }
 
+void EKFslam::fill_estimator_reference_identity(
+  interfaces::msg::EstimatorReference & msg) const
+{
+  msg.session_id = slam_identity::to_msg(estimator_session_id_);
+  msg.epoch_id = estimator_epoch_id_;
+}
+
+void EKFslam::clear_pending_pos_update_locked()
+{
+  const bool had_pending = pos_update.pos_update_available;
+  pos_update.pos_update_available = false;
+  pos_update.cancel_requested = true;
+  pos_update.delta_pos_update.zeros();
+  pos_update.type.clear();
+  pos_update.source.clear();
+  pos_update.session_id = {};
+  pos_update.epoch_id = 0;
+  pos_update.keyframe_id = 0;
+  pos_update.correction_id = 0;
+  if (had_pending && !pos_update.result_ready) {
+    pos_update.result_ready = true;
+    pos_update.result_applied = false;
+    pos_update.applied_delta.zeros();
+    pos_update.outcome = "reset_before_apply";
+    cv_pos_update_.notify_all();
+  }
+}
+
 void EKFslam::publish_estimator_reference_invalid()
 {
   if (!pub_estimator_ref_) {
@@ -630,7 +804,7 @@ void EKFslam::publish_estimator_reference_invalid()
   interfaces::msg::EstimatorReference msg;
   msg.header.stamp = this->get_clock()->now();
   msg.header.frame_id = PAR.Odometry_frame_id;
-  msg.epoch_id = estimator_epoch_id_;
+  fill_estimator_reference_identity(msg);
   msg.valid = false;
   msg.heading_valid = false;
   msg.altitude_update_enabled = PAR.Altitude_update;
@@ -638,11 +812,15 @@ void EKFslam::publish_estimator_reference_invalid()
   msg.robot_init_x = PAR.Robot_init_x;
   msg.robot_init_y = PAR.Robot_init_y;
   msg.robot_init_z = PAR.Robot_init_z;
+  {
+    std::lock_guard<std::mutex> lock_pos(mutex_pos_update);
+    estimator_ref_published_valid_ = false;
+  }
   pub_estimator_ref_->publish(msg);
-  estimator_ref_published_valid_ = false;
   RCLCPP_INFO(
     this->get_logger(),
-    "EstimatorReference invalidated (epoch_id=%llu)",
+    "EstimatorReference invalidated (session=%s epoch_id=%llu)",
+    slam_identity::to_string(estimator_session_id_).c_str(),
     static_cast<unsigned long long>(estimator_epoch_id_));
 }
 
@@ -655,7 +833,7 @@ void EKFslam::publish_estimator_reference_from_ekf(
   interfaces::msg::EstimatorReference msg;
   msg.header.stamp = this->get_clock()->now();
   msg.header.frame_id = PAR.Odometry_frame_id;
-  msg.epoch_id = estimator_epoch_id_;
+  fill_estimator_reference_identity(msg);
   msg.valid = true;
   msg.robot_init_x = PAR.Robot_init_x;
   msg.robot_init_y = PAR.Robot_init_y;
@@ -685,12 +863,16 @@ void EKFslam::publish_estimator_reference_from_ekf(
     msg.altitude_home_up = std::numeric_limits<double>::quiet_NaN();
   }
 
+  {
+    std::lock_guard<std::mutex> lock_pos(mutex_pos_update);
+    estimator_ref_published_valid_ = true;
+  }
   pub_estimator_ref_->publish(msg);
-  estimator_ref_published_valid_ = true;
   RCLCPP_INFO(
     this->get_logger(),
-    "EstimatorReference epoch_id=%llu heading_valid=%d altitude_valid=%d "
+    "EstimatorReference session=%s epoch_id=%llu heading_valid=%d altitude_valid=%d "
     "yaw_enu=%.4f robot_init=(%.3f,%.3f,%.3f)",
+    slam_identity::to_string(estimator_session_id_).c_str(),
     static_cast<unsigned long long>(msg.epoch_id),
     msg.heading_valid ? 1 : 0,
     msg.altitude_valid ? 1 : 0,
@@ -796,120 +978,221 @@ void EKFslam::pub_lslam_Data(LOCALSLAM_DATA &lslam_data)
 
 
 }
+void EKFslam::fill_kf_message(interfaces::msg::Kf & message, KEYFRAME & KF) const
+{
+  arma::vec::fixed<4> q_r2c;
+  Ra2b_TO_Quat_a2b_arma(KF.Rr2c, q_r2c);
+
+  geometry_msgs::msg::Transform t_r2c;
+  t_r2c.translation.x = KF.t_c2r(0);
+  t_r2c.translation.y = KF.t_c2r(1);
+  t_r2c.translation.z = KF.t_c2r(2);
+  t_r2c.rotation.w = q_r2c(0);
+  t_r2c.rotation.x = q_r2c(1);
+  t_r2c.rotation.y = q_r2c(2);
+  t_r2c.rotation.z = q_r2c(3);
+
+  arma::vec::fixed<4> q_n2r;
+  Ra2b_TO_Quat_a2b_arma(KF.Rn2r, q_n2r);
+
+  geometry_msgs::msg::Transform t_n2r;
+  t_n2r.translation.x = KF.r_N(0);
+  t_n2r.translation.y = KF.r_N(1);
+  t_n2r.translation.z = KF.r_N(2);
+  t_n2r.rotation.w = q_n2r(0);
+  t_n2r.rotation.x = q_n2r(1);
+  t_n2r.rotation.y = q_n2r(2);
+  t_n2r.rotation.z = q_n2r(3);
+
+  // Identity captured at selection — do not substitute the live epoch here.
+  message.session_id = slam_identity::to_msg(KF.session_id);
+  message.epoch_id = KF.epoch_id;
+  message.keyframe_id = KF.keyframe_id;
+  message.source_stamp_valid = KF.source_stamp_valid;
+  message.stream = KF.stream;
+  message.r2c = t_r2c;
+  message.n2r = t_n2r;
+  message.radius_uncertainty = KF.radius_uncertainty;
+
+  std_msgs::msg::Header img_header;
+  // frame_id documents internal pose packet semantics (not public odom).
+  img_header.frame_id = "internal_nav_cam";
+  if (KF.source_stamp_valid) {
+    img_header.stamp = stamp_from_ms(KF.source_time_ms);
+  } else {
+    // Deliberate: do not fabricate publish-time. Zero stamp + flag=false.
+    img_header.stamp.sec = 0;
+    img_header.stamp.nanosec = 0;
+  }
+  message.header = img_header;
+
+  sensor_msgs::msg::Image::SharedPtr img_msg =
+    cv_bridge::CvImage(img_header, sensor_msgs::image_encodings::MONO8, KF.frame)
+      .toImageMsg();
+  message.img = *img_msg;
+}
+
 //----------------------------------------------------------------------------------------------------------------
 // Publish "intermediate"KeyFrames to topic
 // Rodrigo M. 2022
 void EKFslam::pub_kf_cl(KEYFRAME &KF)
-{ 
-  
-  arma::vec::fixed<4> q_r2c; 
-  Ra2b_TO_Quat_a2b_arma(KF.Rr2c, q_r2c); 
-  
-    geometry_msgs::msg::Transform t_r2c;
-    t_r2c.translation.x = KF.t_c2r(0);
-    t_r2c.translation.y = KF.t_c2r(1);
-    t_r2c.translation.z = KF.t_c2r(2);
-
-    t_r2c.rotation.w =  q_r2c(0);
-    t_r2c.rotation.x =  q_r2c(1);
-    t_r2c.rotation.y =  q_r2c(2);
-    t_r2c.rotation.z =  q_r2c(3);
-
-  arma::vec::fixed<4> q_n2r; 
-  Ra2b_TO_Quat_a2b_arma(KF.Rn2r, q_n2r);
-
-    geometry_msgs::msg::Transform t_n2r;
-    t_n2r.translation.x = KF.r_N(0);
-    t_n2r.translation.y = KF.r_N(1);
-    t_n2r.translation.z = KF.r_N(2);
-
-    t_n2r.rotation.w =  q_n2r(0);
-    t_n2r.rotation.x =  q_n2r(1);
-    t_n2r.rotation.y =  q_n2r(2);
-    t_n2r.rotation.z =  q_n2r(3);
-
+{
   auto message = interfaces::msg::Kf();
-    message.r2c = t_r2c;
-    message.n2r = t_n2r;
-  
-  sensor_msgs::msg::Image::SharedPtr img_msg; 
-  img_msg = cv_bridge::CvImage(std_msgs::msg::Header(), sensor_msgs::image_encodings::MONO8, KF.frame).toImageMsg();        
-  message.img = *img_msg;
-
-  message.radius_uncertainty = KF.radius_uncertainty;
-
+  fill_kf_message(message, KF);
   pub_kf_cl_->publish(message);
-  //cout << KF.r_N << endl;
-
 }
 
 //--------------------------------------------------------------------------------------------------------------
 // Publish KeyFrames to topic
 // Rodrigo M. 2022
 void EKFslam::pub_kf(KEYFRAME &KF)
-{ 
-  
-  arma::vec::fixed<4> q_r2c; 
-  Ra2b_TO_Quat_a2b_arma(KF.Rr2c, q_r2c); 
-  
-    geometry_msgs::msg::Transform t_r2c;
-    t_r2c.translation.x = KF.t_c2r(0);
-    t_r2c.translation.y = KF.t_c2r(1);
-    t_r2c.translation.z = KF.t_c2r(2);
-
-    t_r2c.rotation.w =  q_r2c(0);
-    t_r2c.rotation.x =  q_r2c(1);
-    t_r2c.rotation.y =  q_r2c(2);
-    t_r2c.rotation.z =  q_r2c(3);
-
-  arma::vec::fixed<4> q_n2r; 
-  Ra2b_TO_Quat_a2b_arma(KF.Rn2r, q_n2r);
-
-    geometry_msgs::msg::Transform t_n2r;
-    t_n2r.translation.x = KF.r_N(0);
-    t_n2r.translation.y = KF.r_N(1);
-    t_n2r.translation.z = KF.r_N(2);
-
-    t_n2r.rotation.w =  q_n2r(0);
-    t_n2r.rotation.x =  q_n2r(1);
-    t_n2r.rotation.y =  q_n2r(2);
-    t_n2r.rotation.z =  q_n2r(3);
-
+{
   auto message = interfaces::msg::Kf();
-    message.r2c = t_r2c;
-    message.n2r = t_n2r;
-  
-  sensor_msgs::msg::Image::SharedPtr img_msg; 
-  img_msg = cv_bridge::CvImage(std_msgs::msg::Header(), sensor_msgs::image_encodings::MONO8, KF.frame).toImageMsg();        
-  message.img = *img_msg;
-
+  fill_kf_message(message, KF);
   pub_kf_->publish(message);
-  //cout << KF.r_N << endl;
-
 }
 //------------------------------------------------------------------------------------------------------------------------------
-void EKFslam::Handle_pos_update_service(const std::shared_ptr<interfaces::srv::LSposUpdate::Request> request,std::shared_ptr<interfaces::srv::LSposUpdate::Response> response)
+void EKFslam::Handle_pos_update_service(
+  const std::shared_ptr<interfaces::srv::LSposUpdate::Request> request,
+  std::shared_ptr<interfaces::srv::LSposUpdate::Response> response)
 {
-  
-  double delta_x = request->delta_x;
-  double delta_y = request->delta_y;
-  double delta_z = request->delta_z;
-  string type = request->type;
- 
-  if(delta_x != 0 || delta_y != 0 || delta_z != 0  )
+  response->accepted = false;
+  response->applied = false;
+  response->applied_delta_x = 0.0;
+  response->applied_delta_y = 0.0;
+  response->applied_delta_z = 0.0;
+  response->outcome = "rejected";
+  response->reason.clear();
+
+  PosUpdateRequestView view;
+  view.delta_x = request->delta_x;
+  view.delta_y = request->delta_y;
+  view.delta_z = request->delta_z;
+  view.type = request->type;
+  view.source = request->source;
+  view.session_id = slam_identity::from_msg(request->session_id);
+  view.epoch_id = request->epoch_id;
+  view.keyframe_id = request->keyframe_id;
+  view.correction_id = request->correction_id;
+
+  bool steps_running = false;
   {
-    mutex_pos_update.lock();
+    std::lock_guard<std::mutex> lock_run(mutex_ekf_run);
+    steps_running = ekf_steps_loop_run;
+  }
+  if (!steps_running) {
+    response->reason = "localslam_disabled";
+    response->outcome = "localslam_disabled";
+    return;
+  }
+  // EKF object lives on the worker thread; valid EstimatorReference is the
+  // cross-thread signal that system_init succeeded for this epoch.
+  if (!estimator_ref_published_valid_) {
+    response->reason = "not_initialized";
+    response->outcome = "not_initialized";
+    return;
+  }
 
-      pos_update.delta_pos_update[0] = delta_x;
-      pos_update.delta_pos_update[1] = delta_y;
-      pos_update.delta_pos_update[2] = delta_z;
-      pos_update.pos_update_available = true;
-      pos_update.type = type;
-    mutex_pos_update.unlock();
-  }  
+  std::unique_lock<std::mutex> lock_pos(mutex_pos_update);
+  if (pos_update.pos_update_available) {
+    response->reason = "busy";
+    response->outcome = "busy";
+    return;
+  }
 
-  //cout << "delta_pos update request: " << pos_update << endl;
+  if (bookkeeping_near_capacity(applied_correction_ids_)) {
+    RCLCPP_WARN(
+      this->get_logger(),
+      "LSposUpdate bookkeeping near capacity (%zu/%zu) for this epoch; "
+      "further distinct correction_ids will be rejected until epoch reset "
+      "(no eviction — duplicates stay blocked)",
+      applied_correction_ids_.size(),
+      localslam::kMaxAppliedCorrectionIds);
+  }
+  const auto admit = admit_pos_update(
+    view,
+    estimator_ref_published_valid_,
+    estimator_session_id_,
+    estimator_epoch_id_,
+    applied_correction_ids_);
+  if (!admit.accepted) {
+    response->reason = admit.reason;
+    response->outcome = "rejected";
+    RCLCPP_WARN(
+      this->get_logger(),
+      "LSposUpdate rejected: %s (correction_id=%llu epoch=%llu)",
+      admit.reason.c_str(),
+      static_cast<unsigned long long>(view.correction_id),
+      static_cast<unsigned long long>(view.epoch_id));
+    return;
+  }
 
+  pos_update.delta_pos_update[0] = view.delta_x;
+  pos_update.delta_pos_update[1] = view.delta_y;
+  pos_update.delta_pos_update[2] = view.delta_z;
+  pos_update.type = view.type;
+  pos_update.source = view.source;
+  pos_update.session_id = view.session_id;
+  pos_update.epoch_id = view.epoch_id;
+  pos_update.keyframe_id = view.keyframe_id;
+  pos_update.correction_id = view.correction_id;
+  pos_update.result_ready = false;
+  pos_update.result_applied = false;
+  pos_update.applied_delta.zeros();
+  pos_update.outcome.clear();
+  pos_update.cancel_requested = false;
+  pos_update.pos_update_available = true;
+  response->accepted = true;
+
+  // Wait for EKF worker (separate thread) — do not hold other locks.
+  // Timeout: wait_for reacquires the mutex before returning. The worker holds
+  // this same mutex for the entire take→mutate→result path, so a timeout
+  // return either sees result_ready or a still-pending request we can cancel
+  // atomically (no unreported later mutation).
+  const bool done = cv_pos_update_.wait_for(
+    lock_pos, std::chrono::milliseconds(2000),
+    [this]() { return pos_update.result_ready; });
+  if (!done) {
+    if (pos_update.result_ready) {
+      // Applied while reacquiring the lock after the wait clock expired.
+    } else if (pos_update.pos_update_available) {
+      pos_update.pos_update_available = false;
+      pos_update.cancel_requested = true;
+      pos_update.result_applied = false;
+      pos_update.applied_delta.zeros();
+      pos_update.outcome = "cancelled";
+      pos_update.result_ready = true;
+      response->reason = "apply_timeout_cancelled";
+      response->outcome = "cancelled";
+      response->applied = false;
+      RCLCPP_WARN(
+        this->get_logger(),
+        "LSposUpdate cancelled on timeout before EKF mutation "
+        "(correction_id=%llu)",
+        static_cast<unsigned long long>(view.correction_id));
+      return;
+    } else {
+      // Worker cleared available but has not published result yet — should be
+      // unreachable while worker holds this mutex through mutation. Treat as
+      // unresolved: do not claim non-application.
+      response->reason = "apply_pending_unresolved";
+      response->outcome = "apply_pending";
+      response->applied = false;
+      RCLCPP_ERROR(
+        this->get_logger(),
+        "LSposUpdate timeout with in-flight apply (correction_id=%llu); "
+        "outcome unresolved — do not auto-resume coordination",
+        static_cast<unsigned long long>(view.correction_id));
+      return;
+    }
+  }
+
+  response->applied = pos_update.result_applied;
+  response->applied_delta_x = pos_update.applied_delta[0];
+  response->applied_delta_y = pos_update.applied_delta[1];
+  response->applied_delta_z = pos_update.applied_delta[2];
+  response->outcome = pos_update.outcome;
+  response->reason = pos_update.outcome == "applied" ? "" : pos_update.outcome;
 }
 
 //-----------------------------------------------------------------------------------------------------------------------------
@@ -925,7 +1208,16 @@ void EKFslam::request_ekf_reinit()
   // Same semantics as legacy SimpleServ 'i': mark uninitialized on the
   // worker thread. Altitude home is instance-owned and cleared with
   // set_ekf_initialized_statet(false) / system_init.
-  publish_estimator_reference_invalid();
+  // Invalidate reference immediately; clear queued corrections so a
+  // prepare→reset→send race cannot mutate the next epoch.
+  {
+    std::lock_guard<std::mutex> lock_pos(mutex_pos_update);
+    clear_pending_pos_update_locked();
+    applied_correction_ids_.clear();
+  }
+  // G6b: clear correction association; keep snapshot_seq monotonic (never reuse).
+  last_published_correction_id_ = 0;
+  publish_estimator_reference_invalid();  // sets estimator_ref_published_valid_=false
   mutex_init_system.lock();
   re_init_sys = true;
   mutex_init_system.unlock();
@@ -991,6 +1283,12 @@ void EKFslam::Handle_enable_service(
   // Maps to SimpleServ 'r' / 's'. Enable before init is valid: the worker
   // waits for attitude (or proceeds without) once running. Disable freezes
   // steps; re-enable resumes without implicit reinit.
+  // G5: disable clears any pending correction (waiting service gets
+  // reset_before_apply) — do not leave work that cannot run.
+  if (!request->data) {
+    std::lock_guard<std::mutex> lock_pos(mutex_pos_update);
+    clear_pending_pos_update_locked();
+  }
   set_ekf_steps_running(request->data);
   response->success = true;
   response->message = request->data ? "ekf loop enabled" : "ekf loop disabled";

@@ -16,8 +16,12 @@ exp*/
 __pycache__/
 *.pyc
 imgui.ini
+tools/gtsam_prefix.env
 
 # Large / ephemeral outputs (keep docs/evidence explicitly if needed)
 /*.png
 /*.csv
 logfile_*.csv
+
+# Generated experimental evidence and recordings
+/docs/evidence/

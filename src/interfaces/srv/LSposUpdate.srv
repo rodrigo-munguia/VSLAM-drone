@@ -1,6 +1,38 @@
+# Global → Local position correction request (internal nav frame, metres).
+# Identity fields are mandatory; identity-less legacy requests are rejected.
+#
+# session_id / epoch_id — Local SLAM reference that originated the computation.
+# keyframe_id           — keyframe that triggered the originating GS step.
+# correction_id         — unique id for this correction emission (idempotency).
+#                         Scope: Global SLAM instance (high bits = boot nonce).
+# type                  — "bundle_adjustment" | "close_loop"
+#                         (apply-gate family; loops share close_loop gates)
+# source                — G6d origin: "ba" | "tag_loop" | "visual_loop"
+#                         Empty treated as inferred from type for compatibility.
+#
+# Response (G5):
+#   accepted — admitted for processing (not merely "looks valid").
+#   applied  — EKF state was mutated by at least one axis.
+#   applied_delta_* — actual translation applied in internal nav (after gates).
+#   outcome:
+#     rejected | applied | gated_noop | busy | localslam_disabled |
+#     not_initialized | reset_before_apply | apply_timeout
+# Do not treat accepted=true alone as application success.
+
 float64 delta_x
 float64 delta_y
 float64 delta_z
-string type 
+string type
+string source
+unique_identifier_msgs/UUID session_id
+uint64 epoch_id
+uint64 keyframe_id
+uint64 correction_id
 ---
-bool response
+bool accepted
+string reason
+bool applied
+float64 applied_delta_x
+float64 applied_delta_y
+float64 applied_delta_z
+string outcome

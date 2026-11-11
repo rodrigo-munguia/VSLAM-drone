@@ -37,6 +37,7 @@ static void printcommands(const std::string & viewer)
     << "|   s  Start/Stop Local SLAM (/EKFslam/enable; visual on start)\n"
     << "|   w  Coordinated reset (/EKFslam/reset + control)\n"
     << "|   a  Start/Stop control plan\n"
+    << "|   h  Recover coordination hold (resume plan; not teleop)\n"
     << "|   t  Takeoff / land (Webots webot_service)\n"
     << "|   0  Request Local SLAM statistics log\n";
   if (viewer == "plot2") {
@@ -140,6 +141,12 @@ int main(int argc, char ** argv)
       if (k == 'a') {
         send_simple(client_control, 'r');
         std::cout << "operator-> control plan toggle requested\n";
+      }
+
+      if (k == 'h') {
+        // Explicit hold recovery — must not reuse teleop 'r' (forward).
+        send_simple(client_control, 'h');
+        std::cout << "operator-> coordination-hold recovery requested\n";
       }
 
       if (k == 'w') {

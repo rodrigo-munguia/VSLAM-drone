@@ -134,15 +134,19 @@ def _build(context, *args, **kwargs):
         ('Robotstate_topic', LaunchConfiguration('robotstate_topic').perform(context)),
     ]
 
+    node_name = LaunchConfiguration('node_name').perform(context) or 'EKFslam'
+    container_name = (
+        LaunchConfiguration('container_name').perform(context) or 'localslam_container')
+
     node = ComposableNode(
         package='localslam',
         plugin='localslam::EKFslam',
-        name='EKFslam',
+        name=node_name,
         parameters=[params],
         remappings=remappings,
     )
     container = ComposableNodeContainer(
-        name='localslam_container',
+        name=container_name,
         namespace='',
         package='rclcpp_components',
         executable='component_container',
@@ -158,6 +162,14 @@ def generate_launch_description():
             'params_file',
             default_value='',
             description='YAML with ros__parameters (default: share/localslam/config/localslam_params.yaml)'),
+        DeclareLaunchArgument(
+            'node_name',
+            default_value='EKFslam',
+            description='Composable node name (also drives ~/ private topics).'),
+        DeclareLaunchArgument(
+            'container_name',
+            default_value='localslam_container',
+            description='Component container process name.'),
         DeclareLaunchArgument('sensor_input_mode', default_value='standard'),
         DeclareLaunchArgument(
             'altitude_input_mode',

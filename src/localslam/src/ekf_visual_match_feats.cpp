@@ -282,14 +282,8 @@ void EKF::Visual_match_SelectKeyFrames(FRAME *frame, int n_m_points,arma::vec::f
            KF_selected.Rn2r = Rn2r;
            KF_selected.t_c2r = t_c2r;
            KF_selected.Rr2c = Rr2c;
-
-           /*           
-           cout << "New Keyframe selected " << endl;
-           cout << "r_N: " << r_N << endl;
-           cout << "Rn2r: " << Rn2r << endl;
-           cout << "t_c2r: " << t_c2r << endl;
-           cout << "Rr2c: " << Rr2c << endl;
-           */
+           // Capture identity/stamp at selection — never relabel later at publish.
+           stamp_keyframe_identity(KF_selected, frame, /*STREAM_MAP*/ 0);
 
            count_f = 0;
            last_robot_pos = x.subvec(7,9);
@@ -307,6 +301,7 @@ void EKF::Visual_match_SelectKeyFrames(FRAME *frame, int n_m_points,arma::vec::f
             KF_cl.t_c2r = t_c2r;
             KF_cl.Rr2c = Rr2c;
             KF_cl.radius_uncertainty = Cl_radius_uncertainty;
+            stamp_keyframe_identity(KF_cl, frame, /*STREAM_CLOSE_LOOP*/ 1);
             New_KF_cl = true;
           }  
         }
@@ -319,6 +314,7 @@ void EKF::Visual_match_SelectKeyFrames(FRAME *frame, int n_m_points,arma::vec::f
            KF_selected.Rn2r = Rn2r;
            KF_selected.t_c2r = t_c2r;
            KF_selected.Rr2c = Rr2c;
+           stamp_keyframe_identity(KF_selected, frame, /*STREAM_MAP*/ 0);
            count_f = 0;
            last_robot_pos = x.subvec(7,9);
            NewKF_available = true;

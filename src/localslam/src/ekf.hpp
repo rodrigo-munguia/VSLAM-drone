@@ -141,7 +141,21 @@ class EKF
           arma::vec::fixed<13> & x_r,
           arma::mat::fixed<13, 13> & P_r,
           double & radius_uncertainty);
-        void Update_pos_with_delta(arma::vec::fixed<3> delta_pos, string type);
+        /**
+         * Apply Global SLAM translation delta (internal nav). Returns the
+         * actual applied components after GS_/CL_ axis gates. Does not modify P.
+         * close_loop resets Pc only when at least one axis is applied.
+         */
+        struct PosDeltaApplyResult
+        {
+          bool applied{false};
+          double applied_dx{0.0};
+          double applied_dy{0.0};
+          double applied_dz{0.0};
+          bool reset_pc{false};
+        };
+        PosDeltaApplyResult Update_pos_with_delta(
+          arma::vec::fixed<3> delta_pos, string type);
         void SetCompute_Pc_flag(bool state);
         void set_ekf_visual_update(bool state);
 
@@ -156,10 +170,23 @@ class EKF
           double alpha_c,
           const std::vector<double> & distortions);
 
-       
+        /**
+         * G3: identity used when selecting keyframes. Call on session create and
+         * whenever epoch_id bumps after successful system_init. Resets the
+         * per-epoch keyframe_id counter.
+         */
+        void set_reference_identity(
+          const slam_identity::UuidBytes & session_id, uint64_t epoch_id);
 
+        slam_identity::UuidBytes reference_session_id() const { return ref_session_id_; }
+        uint64_t reference_epoch_id() const { return ref_epoch_id_; }
 
-    
+private:
+        slam_identity::UuidBytes ref_session_id_{slam_identity::nil_uuid()};
+        uint64_t ref_epoch_id_{0};
+        uint64_t next_keyframe_id_{1};
+
+        void stamp_keyframe_identity(KEYFRAME & kf, FRAME * frame, uint8_t stream);
 };
 
 

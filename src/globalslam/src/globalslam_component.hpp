@@ -20,19 +20,47 @@
 #include "parameters.hpp"
 #include "interfaces/msg/kf.hpp"
 #include "interfaces/msg/gmap.hpp"
+#include "interfaces/msg/estimator_reference.hpp"
 #include "interfaces/srv/l_spos_update.hpp"
 #include "interfaces/srv/simple_serv.hpp"
+#include "interfaces/srv/correction_coordinate.hpp"
+#include "interfaces/msg/correction_applied.hpp"
+#include "interfaces/msg/correction_feedback_accepted.hpp"
+#include "interfaces/msg/global_loop_committed.hpp"
+#include "g6d_source_policy.hpp"
+#include "nav_msgs/msg/path.hpp"
+#include "sensor_msgs/msg/point_cloud2.hpp"
+#include "std_srvs/srv/set_bool.hpp"
+#include "std_srvs/srv/trigger.hpp"
 #include "globalslam_types.hpp"
+#include "g2_run_control.hpp"
+#include "g3_admission.hpp"
+#include "g4_viz_conversions.hpp"
+#include "g6_coord_dispatch.hpp"
+#include "g6b_feedback_completion.hpp"
+#include "../../common/slam_identity.hpp"
+#include <atomic>
+#include <condition_variable>
+#include <deque>
 #include <mutex>
+#include <thread>
+#include <unordered_set>
 #include "gmap.hpp"
 #include "cloop.hpp"
-
-
 
 using namespace std;
 
 namespace globalslam
 {
+
+struct CorrectionProvenance
+{
+  slam_identity::UuidBytes session_id{slam_identity::nil_uuid()};
+  uint64_t epoch_id{0};
+  uint64_t keyframe_id{0};
+  uint64_t correction_id{0};
+  g6d::CorrectionSource source{g6d::CorrectionSource::Ba};
+};
 
 class Gslam : public rclcpp::Node
 {
@@ -43,87 +71,175 @@ public:
   ~Gslam();
 
 private:
-  //rclcpp::Subscription<std_msgs::msg::String>::SharedPtr sub_;
-  
-  // declare subscribers
   rclcpp::Subscription<interfaces::msg::Kf>::SharedPtr sub_Kf_;
   rclcpp::Subscription<interfaces::msg::Kf>::SharedPtr sub_Kf_cl_;
-        
-  // declare callbacks
-  void Kf_callback(const interfaces::msg::Kf & msg) const;
-  void Kf_cl_callback(const interfaces::msg::Kf & msg) ;
-  
-  // declare Services
+  rclcpp::Subscription<interfaces::msg::EstimatorReference>::SharedPtr sub_estimator_ref_;
+
+  void Kf_callback(const interfaces::msg::Kf & msg);
+  void Kf_cl_callback(const interfaces::msg::Kf & msg);
+  void EstimatorReference_callback(const interfaces::msg::EstimatorReference & msg);
+
+  bool try_admit_and_convert_kf(
+    const interfaces::msg::Kf & msg, KEYFRAME & kf_out, const char * stream_name);
+
   rclcpp::Service<interfaces::srv::SimpleServ>::SharedPtr srv_globalslam_run_;
-  void Handle_globalslam_run_service(const std::shared_ptr<interfaces::srv::SimpleServ::Request> request,std::shared_ptr<interfaces::srv::SimpleServ::Response> response);
+  void Handle_globalslam_run_service(
+    const std::shared_ptr<interfaces::srv::SimpleServ::Request> request,
+    std::shared_ptr<interfaces::srv::SimpleServ::Response> response);
 
-  // declare clients
+  rclcpp::Service<std_srvs::srv::SetBool>::SharedPtr srv_enable_;
+  rclcpp::Service<std_srvs::srv::Trigger>::SharedPtr srv_reset_;
+  void Handle_enable_service(
+    const std::shared_ptr<std_srvs::srv::SetBool::Request> request,
+    std::shared_ptr<std_srvs::srv::SetBool::Response> response);
+  void Handle_reset_service(
+    const std::shared_ptr<std_srvs::srv::Trigger::Request> request,
+    std::shared_ptr<std_srvs::srv::Trigger::Response> response);
+
+  /** Shared implementation for ~/reset and SimpleServ 'i'. */
+  void request_reset();
+  /** Clear GS state due to EstimatorReference invalid/identity change. */
+  void clear_for_reference_change(const char * reason);
+
   rclcpp::Client<interfaces::srv::LSposUpdate>::SharedPtr client_local_slam_pos_update_;
-  void Send_local_slam_pos_update(arma::vec::fixed<3> &Delta_kf_n, std::string type);
-  
+  /**
+   * Dispatch LSposUpdate asynchronously. Response callback is generation-gated.
+   * G6a: may require CorrectionCoordinate pause ack before dispatch.
+   * Close-loop completion prefers coordinated release(signal_close_loop) over
+   * legacy SimpleServ 'c' when coordination was used.
+   */
+  void Send_local_slam_pos_update(
+    arma::vec::fixed<3> & Delta_kf_n,
+    g6d::CorrectionSource source,
+    const CorrectionProvenance & provenance,
+    uint64_t dispatch_generation,
+    bool notify_control_on_apply);
+  void Publish_global_loop_committed(
+    const CorrectionProvenance & provenance,
+    uint64_t map_revision,
+    const std::string & source,
+    const arma::vec::fixed<3> & committed_camera,
+    bool match_ba_refine_ran);
+
   rclcpp::Client<interfaces::srv::SimpleServ>::SharedPtr client_control_run_;
-     
+  rclcpp::Client<interfaces::srv::CorrectionCoordinate>::SharedPtr client_correction_coord_;
+  rclcpp::Subscription<interfaces::msg::CorrectionApplied>::SharedPtr sub_correction_applied_;
+  rclcpp::Subscription<interfaces::msg::CorrectionFeedbackAccepted>::SharedPtr
+    sub_correction_feedback_accepted_;
+  void Send_control_loop_closed_signal();
+  bool Prepare_control_pause(
+    const CorrectionProvenance & provenance, const std::string & type);
+  void Release_or_abort_control(
+    const CorrectionProvenance & provenance,
+    const std::string & type,
+    bool applied,
+    bool abort,
+    bool resume_if_owned);
+  /** G6b.1: finish coordinated txn from FeedbackAccepted / timeout (never block executor). */
+  void Complete_coordinated_txn_locked(
+    const CorrectionProvenance & provenance,
+    const std::string & type,
+    uint64_t dispatch_generation,
+    g6b_fb::TxnPhase phase);
+  void Arm_feedback_timeout_timer(uint64_t correction_id);
+  void Cancel_feedback_timeout_timer();
+  void CorrectionApplied_callback(const interfaces::msg::CorrectionApplied & msg);
+  void CorrectionFeedbackAccepted_callback(
+    const interfaces::msg::CorrectionFeedbackAccepted & msg);
 
-  // declare publishers
   rclcpp::Publisher<interfaces::msg::Gmap>::SharedPtr pub_gmap_data_;
+  rclcpp::Publisher<nav_msgs::msg::Path>::SharedPtr pub_global_keyframes_;
+  rclcpp::Publisher<sensor_msgs::msg::PointCloud2>::SharedPtr pub_global_landmarks_;
+  rclcpp::Publisher<interfaces::msg::GlobalLoopCommitted>::SharedPtr
+    pub_global_loop_committed_;
   void Publish_gmap_data();
+  /** Copy committed Gmap under lock; serialize/publish Path+cloud unlocked. */
+  void Publish_standard_viz(uint64_t generation);
+  /** Latch empty Path/cloud for late subscribers after reset/ref change. */
+  void Publish_empty_standard_viz(uint64_t generation);
+  bool Capture_map_snapshot_locked(g4_viz::MapSnapshot & snap, uint64_t generation);
 
-  //------
-  // declare functions 
   void setParameters();
 
-  thread gmap_loop_;
-  thread cloop_loop_;
+  std::thread gmap_loop_;
+  std::thread cloop_loop_;
   void GMAP_LOOP();
-  bool gmap_updated;
-
   void CLOOP_LOOP();
-  bool gmap_thread_loop_run;
-  bool cloop_thread_loop_run;
-  
-  // variables
-  GLOBAL_MAP Gmap; // Global map structure
+  void stop_workers();
 
+  std::atomic<bool> workers_run_{true};
+  /** High 32 bits of correction_id — unique per GS process instance. */
+  uint32_t correction_boot_nonce_{0};
+  std::atomic<uint32_t> next_correction_seq_{1};
+
+  GLOBAL_MAP Gmap;
 
   std::vector<KEYFRAME> Kf_buffer;
-  
   KEYFRAME kf_cl_last;
-  bool new_kf_cl;
+  bool new_kf_cl{false};
+  bool gmap_updated{false};
 
-  // parameters
   parameters PAR;
-  
-  // mutex
+  bool accept_missing_source_stamp_{false};
+  std::string estimator_reference_topic_{"/EKFslam/estimator_reference"};
+  std::string public_frame_id_{"odom"};
+  int path_max_poses_{0};
+  int landmark_cloud_max_points_{0};
+  /** G6a: required | absent_ok | offline_bypass (see g6_coord_dispatch.hpp). */
+  std::string coordinate_mode_str_{"required"};
+  int coordinate_pause_timeout_ms_{2000};
+  int coordinate_feedback_barrier_timeout_ms_{2000};
+  std::string correction_applied_topic_{"/EKFslam/correction_applied"};
+  std::string correction_feedback_accepted_topic_{"correction_feedback_accepted"};
+
+  G2RunControl run_ctrl_;
+  /** Guards pending coordinated txn + early FeedbackAccepted latch (G6b.1). */
+  std::mutex mutex_corr_barrier_;
+  g6b_fb::PendingTxn pending_corr_txn_;
+  std::deque<uint64_t> early_feedback_ids_;
+  CorrectionProvenance pending_corr_provenance_{};
+  rclcpp::TimerBase::SharedPtr feedback_timeout_timer_;
+  ActiveReference active_ref_;
+  std::unordered_set<uint64_t> seen_keyframe_ids_;
+
+  // Lock order (never invert): run_ctrl_ → rx_kf → rx_kf_cl → get_gm → logs/flags.
+  // mutex_run_ctrl_ also guards active_ref_ / seen_keyframe_ids_.
+  std::mutex mutex_run_ctrl_;
   std::mutex mutex_rx_kf;
   std::mutex mutex_rx_kf_cl;
   std::mutex mutex_get_gm;
-  std::mutex mutex_send_pos;
   std::mutex mutex_log_gmap;
   std::mutex mutex_log_cloop;
-  std::mutex mutex_init_cloop;
-  std::mutex mutex_init_gmap;
   std::mutex mutex_rechome;
   std::mutex mutex_activate_CL;
-  bool init_gmap_flag;
-  bool init_cloop_flag;
-  bool loop_closed_flag;
-  bool gmap_get_log_flag;
-  bool cloop_get_log_flag;
-  bool rechome_flag;
-  bool activate_CL_flag;
+  std::mutex mutex_home_capture_q_;
 
-  void log_data_g(STOREG &data);
-  void log_data_c(STOREC &data);
-  void mean_std(std::vector<double> &data, double &mean, double &std, double &sum);
-  void log_data_to_file(string file_name,std::pair<std::vector<double>,std::vector<double>> &data);
+  bool gmap_get_log_flag{false};
+  bool cloop_get_log_flag{false};
+  bool loop_closed_flag{false};
+  /** Legacy end-of-RecHome: finalize capture + stamp n_kf_home ('u'). */
+  bool rechome_flag{false};
+  /** Start RecHome capture window ('b'). */
+  bool rechome_begin_flag_{false};
+  bool activate_CL_flag{false};
+  /** Original LS KF snapshots for home-tag capture (map + CL streams). */
+  std::vector<KEYFRAME> home_capture_kf_q_;
+  bool home_capture_active_{false};
+  bool home_capture_finalize_pending_{false};
+  bool home_capture_finalize_result_{false};
+  bool home_capture_finalize_done_{false};
+  int home_capture_finalize_idle_iters_{0};
+  int home_capture_finalize_wait_iters_{0};
+  bool home_capture_invalidate_{false};
 
-
-  
-  protected:
-  
-  
+  void clear_pending_keyframes_locked();
+  void log_data_g(STOREG & data);
+  void log_data_c(STOREC & data);
+  void mean_std(std::vector<double> & data, double & mean, double & std, double & sum);
+  void log_data_to_file(
+    string file_name, std::pair<std::vector<double>, std::vector<double>> & data);
 };
 
-}  // namespace composition
+}  // namespace globalslam
 
-#endif  // COMPOSITION__LISTENER_COMPONENT_HPP_
+#endif  // COMPOSITION__GLOBALSLAM_COMPONENT_HPP_

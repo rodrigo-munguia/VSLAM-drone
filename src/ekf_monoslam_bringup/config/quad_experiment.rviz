@@ -49,6 +49,25 @@ Visualization Manager:
       Color: 255; 64; 64
       Pose Style: None
       Buffer Length: 1
+    - Class: rviz_default_plugins/Path
+      Enabled: true
+      Name: Global Keyframes
+      Topic:
+        Value: /gslam/global_keyframes
+      Line Style: Lines
+      Line Width: 0.04
+      Color: 0; 200; 255
+      Pose Style: None
+      Buffer Length: 1
+    - Class: rviz_default_plugins/PointCloud2
+      Enabled: true
+      Name: Global Landmarks
+      Topic:
+        Value: /gslam/global_landmarks
+      Size (m): 0.1
+      Style: Spheres
+      Color Transformer: FlatColor
+      Color: 255; 0; 200
   Enabled: true
   Global Options:
     Fixed Frame: odom

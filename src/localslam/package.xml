@@ -21,6 +21,7 @@
   <depend>tf2_ros</depend>
   <depend>cv_bridge</depend>
   <depend>interfaces</depend>
+  <depend>unique_identifier_msgs</depend>
   <depend>mavros_msgs</depend>
 
   <!-- Standalone launch (A7); component already depends on rclcpp_components. -->

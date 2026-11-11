@@ -4,11 +4,17 @@
 /**
  * Shared KEYFRAME type used by Local SLAM (producer) and Global SLAM (consumer).
  * Kept outside globalslam so localslam does not include the Global SLAM package.
+ *
+ * Identity/timing fields are captured when the snapshot is created (not at ROS
+ * publish). Coordinates remain the estimator's internal conventions.
  */
 
 #include <armadillo>
+#include <cstdint>
 #include <opencv2/opencv.hpp>
 #include <vector>
+
+#include "slam_identity.hpp"
 
 struct KEYFRAME
 {
@@ -24,7 +30,15 @@ struct KEYFRAME
   // OpenCV typedef int64 (same as historical globalslam_types.hpp field).
   std::vector<int64> Idx_Matched_points;
   std::vector<cv::Point2d> UV_Matched_points;
-  double radius_uncertainty;
+  double radius_uncertainty{0.0};
+
+  // G3 identity / timing (captured at selection).
+  slam_identity::UuidBytes session_id{slam_identity::nil_uuid()};
+  uint64_t epoch_id{0};
+  uint64_t keyframe_id{0};
+  long int source_time_ms{0};
+  bool source_stamp_valid{false};
+  uint8_t stream{0};  // 0=map, 1=close_loop
 };
 
 #endif

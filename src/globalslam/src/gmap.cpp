@@ -1,4 +1,6 @@
 #include "gmap.hpp"
+#include "gmap_ba_d5_log.hpp"
+#include "gmap_relative_kf_init.hpp"
 
 
 //-------------------------------------------
@@ -19,6 +21,10 @@ void GMAP::InitGmap()
            
     total_init_anchors = 0;
     total_delete_anchors = 0;
+    birth_gate_attempts = 0;
+    birth_gate_accepted = 0;
+    birth_gate_rejected = 0;
+    have_prev_ekf_cam_pose_ = false;
 
     // initialice store structure for log system statistics            
     store.n_init_anchors = 0;            
@@ -88,6 +94,30 @@ void GMAP::Update()
         // Add new keyframes to the global map
         Gmap.KeyFDATA.push_back(Kf_buffer[k]);
         new_kf = true; // if a new keyframe has been added set this flag
+        KEYFRAME & kf_new = Gmap.KeyFDATA.back();
+        const int idx_new = static_cast<int>(Gmap.KeyFDATA.size()) - 1;
+
+        // Absolute EKF camera pose as admitted (before any relative rewrite).
+        const gmap_relative_kf_init::CamPose T_ekf_curr =
+          gmap_relative_kf_init::from_keyframe(kf_new);
+        gmap_ba_d5::dump_kf_pose("ekf_admit", idx_new, kf_new);
+
+        // BA-D6: optional relative init from latest committed GS pose.
+        // Must run before match / triangulation so the full pipeline uses T_GS.
+        if (PAR.Init_relative_kf_pose_enable && have_prev_ekf_cam_pose_ &&
+          idx_new > 0)
+        {
+          const gmap_relative_kf_init::CamPose T_gs_prev =
+            gmap_relative_kf_init::from_keyframe(Gmap.KeyFDATA[idx_new - 1]);
+          const gmap_relative_kf_init::CamPose T_gs_curr =
+            gmap_relative_kf_init::propagate(
+              T_gs_prev, prev_ekf_cam_pose_, T_ekf_curr);
+          gmap_relative_kf_init::apply_cam_pose(kf_new, T_gs_curr);
+          gmap_ba_d5::dump_kf_pose("rel_admit", idx_new, kf_new);
+        }
+
+        prev_ekf_cam_pose_ = T_ekf_curr;
+        have_prev_ekf_cam_pose_ = true;
         //cout << Kf_buffer[k].frame << endl;
         
             //------------- Try to match the global map points in the new kf  
@@ -139,8 +169,12 @@ void GMAP::Update()
            
            //cout << Gmap.Vgraph << endl;
            
-           // perform (local) bundle adjustment over the global map
-           Bundle_adjustment(); 
+           // G6d: incremental BA is independently gated (feedback is separate).
+           if (PAR.Enable_global_ba) {
+             Bundle_adjustment();
+           } else {
+             Delta_kf_n.zeros();
+           } 
 
            // Update matches and visibility graph  
            /*

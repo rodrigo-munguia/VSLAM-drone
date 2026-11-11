@@ -1,0 +1,103 @@
+# Standalone Global SLAM defaults (package-owned).
+# Supported calibration (G4): Local SLAM Calibration_source=yaml with Mono_cam_*
+# (rows/cols, fc, cc, alpha_c, distortions) matching this YAML. Resolution match
+# alone is insufficient. CameraInfo-driven Local SLAM is unsupported here until
+# full calibration transport on Kf (separate slice).
+#
+# Public outputs (G4): ~/global_keyframes (nav_msgs/Path) and
+# ~/global_landmarks (sensor_msgs/PointCloud2) in Public_frame_id (default odom).
+# Body-origin keyframe poses; Path header.stamp = publication time; pose stamps
+# retain keyframe source time. Not a dense reconstruction or continuous global
+# odometry. Custom gmap_data_topic retained during transition — prefer Path/cloud.
+#
+# G6d processing vs Local feedback (independent per source).
+# Feedback requires its Enable_*; all Apply_* default false.
+# Apply_global_corrections: compatibility master forcing Apply_* for enabled
+# sources only (never enables visual-loop processing alone).
+#
+# Processing_start_enabled: standalone starts disabled; enable via ~/enable.
+# Accept_missing_source_stamp: default false — zero/headerless stamps are dropped.
+# GS restart does not replay past keyframes; prior global map/home is not reconstructed.
+
+/gslam:
+  ros__parameters:
+    Enable_global_ba: true
+    Enable_tag_loop_closure: true
+    Enable_visual_loop_closure: false
+    Apply_ba_corrections: false
+    Apply_tag_loop_corrections: false
+    Apply_visual_loop_corrections: false
+    Apply_global_corrections: false
+    Processing_start_enabled: false
+    Accept_missing_source_stamp: false
+    Estimator_reference_topic: /EKFslam/estimator_reference
+    Public_frame_id: odom
+    Path_max_poses: 0
+    Landmark_cloud_max_points: 0
+    # G6a: dormant while no Apply_* feedback is enabled.
+    # required | absent_ok | offline_bypass
+    Coordinate_mode: required
+    Coordinate_pause_timeout_ms: 2000
+    # G6b waits for CorrectionFeedbackAccepted (Control), not CorrectionApplied alone.
+    Coordinate_feedback_barrier_timeout_ms: 5000
+    Correction_applied_topic: /EKFslam/correction_applied
+    # Match mars / localslam Mono_cam_* when used with the default experiment.
+    Mono_cam_img_rows: 240
+    Mono_cam_img_cols: 400
+    Mono_cam_distortions: [0.0, 0.0, 0.0, 0.0, 0.0]
+    Mono_cam_cc_u: 200.00
+    Mono_cam_cc_v: 120.00
+    Mono_cam_fc_u: 200.0
+    Mono_cam_fc_v: 200.0
+    Mono_cam_alpha_c: 0.0
+    Init_use_anms_for_select_strong_points: true
+    Init_anms_tolerance: 0.3
+    Init_number_candidate_points_per_kf: 1000
+    Init_min_distance_to_previous_mapped_features: 1
+    Init_min_depth_to_consider: 0.2
+    VM_max_inov_error: 30
+    VG_img_search_margin: 15
+    Delete_min_kf_matched_for_keep_anchor: 3
+    BA_max_n_previous_kf_for_search_matches: 20
+    BA_max_n_kf_optimized: 10
+    BA_min_n_latest_kf_to_optimize: 7
+    BA_sigma_uv: 1.0
+    BA_sigma_kf_att: 0.001
+    BA_sigma_kf_xy: 0.05
+    BA_sigma_kf_z: 0.05
+    BA_sigma_kf_pt: 0.3
+    BA_update_kf_pos: true
+    BA_update_kf_att: true
+    BA_update_map: true
+    BA_max_delta_kf_pos: 1.75
+    GM_factor_anchors_sent_to_plot: 10
+    CL_min_n_not_vl_kf: 10
+    CL_min_n_matches: 40
+    CL_min_mean_reprojection_error: 70.0
+    CL_xy_update_max_delta: 6.0
+    CL_odo_sigma_kf_att: 0.0001
+    CL_odo_sigma_kf_xy: 0.05
+    CL_odo_sigma_kf_z: 0.05
+    CL_clo_sigma_kf_att: 0.00001
+    CL_clo_sigma_kf_xy: 0.0005
+    CL_clo_sigma_kf_z: 0.005
+    CL_update_z: false
+    CL_use_robot_uncertainty: true
+    CL_use_only_home_kf: true
+    CL_tag_max_xy_dis: 6.0
+    CL_tag_max_xy_dis_px: 90
+
+    # G6b.3: epoch-owned home-tag POSITION capture during RecHome
+    # CL_home_tag_id: ArUco ID (mars.wbt marker23.png → 23)
+    CL_home_tag_id: 23
+    # CL_home_tag_size_m: marker side length [m] (matches SolidBox 1×1)
+    CL_home_tag_size_m: 1.0
+    # CL_home_capture_min_inliers: minimum accepted unique KF samples (≥1)
+    CL_home_capture_min_inliers: 3
+    # CL_home_capture_min_inlier_fraction: inliers/candidates in (0,1]
+    CL_home_capture_min_inlier_fraction: 0.5
+    # CL_home_capture_max_spread_m: Euclidean reject/final residual [m]
+    CL_home_capture_max_spread_m: 1.5
+    # CL_home_capture_max_samples: unique KF candidate cap
+    CL_home_capture_max_samples: 40
+    Stats: false

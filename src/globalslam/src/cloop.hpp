@@ -5,8 +5,11 @@
 #include "parameters.hpp"
 #include "../../common/Vision/vision.hpp"
 #include "globalslam_types.hpp"
+#include "g6b_home_tag_geometry.hpp"
+#include "g6b_home_tag_capture.hpp"
 #include <opencv2/opencv.hpp>
 #include <opencv2/aruco.hpp>
+#include <string>
 
 class CLOOP
 {
@@ -38,13 +41,28 @@ class CLOOP
         arma::vec::fixed<3> Delta_kf_n;
 
         bool Close_loop;
+        /** G6d: Pose_SLAM deltas applied to shared map (not merely attempted). */
+        bool last_pose_slam_committed_{false};
+        /** "tag_loop" | "visual_loop" for the latest successful commit. */
+        std::string last_loop_source_;
+        arma::vec::fixed<3> last_committed_camera_;
+        bool last_match_ba_refine_ran_{false};
 
         double travel_dis;
         int n_cloop_intents;
         int n_kf_home;
         bool activate_CL_flag;
+        /** G6b.3: epoch-owned capture session + frozen spatial reference. */
+        globalslam::g6b_home_tag::HomeTagCaptureSession home_tag_capture_;
 
         arma::vec::fixed<3> last_pos;
+
+        /** Detect intended home-tag on a KEYFRAME image; fills tvec / d_px / id. */
+        bool Detect_home_tag_on_kf(
+          const KEYFRAME & kf,
+          int & tag_id,
+          double tvec_out[3],
+          double & d_px) const;
 
         std::vector<int> Get_n_not_visually_linked_kf(int idx_kf , int idx_kf_sup_limit );
         std::vector<int> Get_n_visually_linked_kf(int idx_kf, int min_strenght);
@@ -92,7 +110,31 @@ class CLOOP
         bool Get_close_loop_state();
         void Set_close_loop_state(bool state);
 
-        void Set_n_kf_rechome();
+        /** True only when Pose_SLAM produced and applied non-empty deltas. */
+        bool Last_loop_committed() const { return last_pose_slam_committed_; }
+        const std::string & Last_loop_source() const { return last_loop_source_; }
+        arma::vec::fixed<3> Last_committed_camera() const
+        {
+          return last_committed_camera_;
+        }
+        bool Last_match_ba_refine_ran() const { return last_match_ba_refine_ran_; }
+
+        /** Stamp n_kf_home on an already-ready/lifecycle ref (legacy hook). */
+        void Set_n_kf_rechome(
+          const slam_identity::UuidBytes & session_id, uint64_t epoch_id);
+
+        /** G6b.3 RecHome capture: begin / offer LS snapshot / finalize. */
+        bool Begin_home_tag_capture(
+          const slam_identity::UuidBytes & session_id,
+          uint64_t epoch_id,
+          std::string & reason);
+        void Request_home_tag_capture_finalize();
+        bool Try_finalize_home_tag_capture();
+        void Offer_home_tag_capture_kf(const KEYFRAME & kf);
+        void Invalidate_home_tag_capture(const std::string & reason);
+        bool Home_tag_capture_is_recording() const;
+        bool Home_tag_spatial_ready() const;
+        const globalslam::g6b_home_tag::HomeTagReference & Home_tag_reference() const;
 
         void Set_Activate_Deactivate_CL(bool value);
 

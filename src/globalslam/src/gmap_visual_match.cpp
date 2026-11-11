@@ -1,4 +1,5 @@
 #include "gmap.hpp"
+#include "gmap_landmark_audit_log.hpp"
 
 
 
@@ -81,7 +82,15 @@ void GMAP::Match_Gmap_points_into_new_KF()
                 Gmap.KeyFDATA[idx_KF].Idx_Matched_points.push_back(Idx_matched_A); // Add the index of the matched map point to the list of Kf matched points
                 Gmap.KeyFDATA[idx_KF].UV_Matched_points.push_back(pt_m);
                 
-                Gmap.AnchorsDATA[Idx_matched_A].n_kf_matched++; 
+                Gmap.AnchorsDATA[Idx_matched_A].n_kf_matched++;
+                if (gmap_landmark_audit::enabled()) {
+                  const auto & A = Gmap.AnchorsDATA[Idx_matched_A];
+                  gmap_landmark_audit::log_association(
+                    A.audit_id, Idx_matched_A, idx_KF,
+                    Gmap.KeyFDATA[idx_KF].keyframe_id, Descriptor_idx_KF,
+                    pt_m.x, pt_m.y, dis, matches[k].distance,
+                    "match_existing_into_new_kf", false);
+                }
               } 
         
           }
@@ -181,6 +190,14 @@ void GMAP::Match_New_points_into_previous_KF(std::vector<int64> &idx_new_points,
                       
                       idx_kf_m.push_back(idx_kf_target); 
                       idx_pt_m.push_back(idx_new_pt); 
+                      if (gmap_landmark_audit::enabled()) {
+                        const auto & A = Gmap.AnchorsDATA[idx_new_pt];
+                        gmap_landmark_audit::log_association(
+                          A.audit_id, idx_new_pt, idx_kf_target,
+                          Gmap.KeyFDATA[idx_kf_target].keyframe_id, Descriptor_idx_KF,
+                          pt_m.x, pt_m.y, dis, matches[k].distance,
+                          "match_new_into_previous_kf", false);
+                      }
                      // cout << "Map point: " << idx_new_pt << " init in kf: " << Gmap.AnchorsDATA[idx_new_pt].init_KF << " matched in kf: " << idx_kf_target << endl;
 
                     } //  for(unsigned int k =0 ; k< matches.size();k++ ) // for each match, update Feature table    

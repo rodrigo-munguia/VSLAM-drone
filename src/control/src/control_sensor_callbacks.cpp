@@ -4,6 +4,7 @@
 #include <tf2/LinearMath/Matrix3x3.h>
 #include <cmath>
 #include "../../common/Transforms/Euler_to_Ra2b.hpp"
+#include "../../common/ros_slam_identity.hpp"
 using namespace std;
 
 
@@ -101,13 +102,14 @@ namespace control
     if(PAR.Slam_feedback == false)
         {
             mutex_robot_state.lock();
-                
-                arma::vec gt_N = {x - x_0, y - y_0, z - z_0 };
-                arma::vec gt_R = Rn2rG.t()*gt_N;
-                
-                r_c.x = gt_R[0];
-                r_c.y = gt_R[1];
-                r_c.z = gt_R[2];
+                // Skip until attitude rotation is available (see Rn2rG.eye in ctor).
+                if (Rn2rG.n_rows == 3 && Rn2rG.n_cols == 3) {
+                  arma::vec gt_N = {x - x_0, y - y_0, z - z_0 };
+                  arma::vec gt_R = Rn2rG.t()*gt_N;
+                  r_c.x = gt_R[0];
+                  r_c.y = gt_R[1];
+                  r_c.z = gt_R[2];
+                }
             mutex_robot_state.unlock();
             //cout << "-> GPS  " << r_c.x << " " << r_c.y << "  " << r_c.z << endl;  
         }
@@ -269,6 +271,129 @@ namespace control
         RCLCPP_INFO(
           this->get_logger(),
           "Radius feedback re-armed after accepted post-reset Odometry");
+      }
+      // G6b: record accepted pose stamp for snapshot association (meta may
+      // arrive before or after this Odometry).
+      {
+        const int32_t sec = msg.header.stamp.sec;
+        const uint32_t nsec = msg.header.stamp.nanosec;
+        {
+          std::lock_guard<std::mutex> lock(mutex_coord_);
+          g6_feedback::push_bounded_stamp(accepted_odom_stamps_, sec, nsec);
+          while (accepted_odom_stamps_.size() > g6_feedback::kMaxBufferedOdomStamps) {
+            accepted_odom_stamps_.pop_front();
+          }
+          g6_feedback::push_bounded_stamp(odom_stamp_buf_, sec, nsec);
+        }
+        try_pair_odometry_meta(sec, nsec);
+      }
+    }
+  }
+
+  void ControlQuad::OdometryMeta_callback(const interfaces::msg::OdometryMeta & msg)
+  {
+    g6_feedback::MetaSample sample;
+    sample.session_id = slam_identity::from_msg(msg.session_id);
+    sample.epoch_id = msg.epoch_id;
+    sample.snapshot_seq = msg.snapshot_seq;
+    sample.last_correction_id = msg.last_correction_id;
+    sample.stamp_sec = msg.header.stamp.sec;
+    sample.stamp_nanosec = msg.header.stamp.nanosec;
+    if (sample.snapshot_seq == 0 || slam_identity::is_nil(sample.session_id) ||
+      sample.epoch_id == 0)
+    {
+      return;
+    }
+    {
+      std::lock_guard<std::mutex> lock(mutex_coord_);
+      // Reject stale meta if a barrier is armed for a different identity.
+      if (feedback_barrier_.armed &&
+        (!slam_identity::equal(feedback_barrier_.session_id, sample.session_id) ||
+          feedback_barrier_.epoch_id != sample.epoch_id))
+      {
+        RCLCPP_DEBUG_THROTTLE(
+          this->get_logger(), *this->get_clock(), 2000,
+          "Dropping OdometryMeta: session/epoch mismatch vs armed barrier");
+        return;
+      }
+      g6_feedback::push_bounded_meta(odom_meta_buf_, sample);
+    }
+    try_pair_odometry_meta(sample.stamp_sec, sample.stamp_nanosec);
+  }
+
+  void ControlQuad::GlobalLoopCommitted_callback(
+    const interfaces::msg::GlobalLoopCommitted & msg)
+  {
+    // Informational only — never sets cl_flag / never triggers re-navigation.
+    {
+      std::lock_guard<std::mutex> lock(mutex_cl);
+      global_loop_committed_seen_ = true;
+      global_loop_committed_source_ = msg.source;
+      global_loop_committed_revision_ = msg.map_revision;
+    }
+    RCLCPP_INFO(
+      this->get_logger(),
+      "Global loop committed (source=%s map_revision=%llu keyframe_id=%llu); "
+      "Control pose / Pc unchanged until Local feedback is applied",
+      msg.source.c_str(),
+      static_cast<unsigned long long>(msg.map_revision),
+      static_cast<unsigned long long>(msg.keyframe_id));
+  }
+
+  void ControlQuad::CorrectionApplied_feedback_callback(
+    const interfaces::msg::CorrectionApplied & msg)
+  {
+    if (!msg.applied || msg.correction_id == 0 || msg.snapshot_seq == 0) {
+      return;
+    }
+    const auto session = slam_identity::from_msg(msg.session_id);
+    std::lock_guard<std::mutex> lock(mutex_coord_);
+    if (!g6_feedback::arm_from_applied(
+        feedback_barrier_, session, msg.epoch_id, msg.correction_id,
+        msg.snapshot_seq))
+    {
+      return;
+    }
+    RCLCPP_INFO(
+      this->get_logger(),
+      "[G6b-TXN] feedback barrier armed correction_id=%llu snapshot_seq=%llu "
+      "Slam_feedback=%d",
+      static_cast<unsigned long long>(msg.correction_id),
+      static_cast<unsigned long long>(msg.snapshot_seq),
+      PAR.Slam_feedback ? 1 : 0);
+
+    // GT / non-odometry pose source: corrected odometry is not required for
+    // plan resumption. Pause still coordinates cmd suppression; GPS/Webots
+    // state remains the control pose. Accept on CorrectionApplied.
+    if (!PAR.Slam_feedback || PAR.Slam_feedback_interface != "odometry") {
+      if (g6_feedback::accept_gt(feedback_barrier_)) {
+        publish_feedback_accepted_locked();
+      }
+      return;
+    }
+
+    // Odometry feedback: event-before-odom or odom-before-event.
+    if (g6_feedback::try_accept_from_history(feedback_barrier_, accepted_snap_hist_)) {
+      publish_feedback_accepted_locked();
+      return;
+    }
+    // Also scan buffered metas already paired with accepted odom stamps.
+    for (const auto & meta : odom_meta_buf_) {
+      if (!g6_feedback::meta_satisfies(feedback_barrier_, meta)) {
+        continue;
+      }
+      bool pose_ok = false;
+      for (const auto & s : accepted_odom_stamps_) {
+        if (s.first == meta.stamp_sec && s.second == meta.stamp_nanosec) {
+          pose_ok = true;
+          break;
+        }
+      }
+      if (pose_ok &&
+        g6_feedback::accept_odometry(feedback_barrier_, meta.snapshot_seq))
+      {
+        publish_feedback_accepted_locked();
+        return;
       }
     }
   }

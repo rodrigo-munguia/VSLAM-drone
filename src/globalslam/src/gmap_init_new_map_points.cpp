@@ -5,13 +5,18 @@
 #include "gmap.hpp"
 #include "../../common/Vision/vision.hpp"
 #include "../../common/anms/anms.h"
+#include "gmap_birth_reproj.hpp"
+#include "gmap_landmark_audit_log.hpp"
 
 #ifndef NOTHAVE_SFM
      #include <opencv2/sfm.hpp>
 #endif
 
 #include <cmath>
+#include <cstdlib>
+#include <fstream>
 #include <numbers>
+#include <string>
 //#include <opencv2/sfm/triangulation.hpp>
 //#include "opencv2/sfm/triangulation.hpp"
 
@@ -303,7 +308,32 @@ std::vector<int64> GMAP::Init_new_map_points()
                     //cout << "pt: " << x << " " << y << " " << z << endl;
 
                     if (pt_c[2] > PAR.Init_min_depth_to_consider )
-                    { 
+                    {
+                        ++birth_gate_attempts;
+                        const cv::Point2f uv_prev_pt = keyPoints_previous[idx_descriptor_previous].pt;
+                        const cv::Point2f uv_curr_pt = keyPoints_current[idx_descriptor_current].pt;
+                        double birth_rms = gmap_birth_reproj::kNaN;
+                        if (PAR.Init_birth_reproj_gate_enable) {
+                          birth_rms = gmap_birth_reproj::two_view_reproj_rms_px(
+                            pt_n, Gmap.KeyFDATA[idx_previous_KF], Gmap.KeyFDATA[idx_current_KF],
+                            uv_prev_pt, uv_curr_pt, cam_parameters);
+                          if (!gmap_birth_reproj::passes_gate(
+                                true, birth_rms, PAR.Init_birth_reproj_max_rms_px)) {
+                            ++birth_gate_rejected;
+                            if (gmap_landmark_audit::enabled()) {
+                              gmap_landmark_audit::log_birth_rejected(
+                                idx_previous_KF, idx_current_KF,
+                                Gmap.KeyFDATA[idx_previous_KF].keyframe_id,
+                                Gmap.KeyFDATA[idx_current_KF].keyframe_id,
+                                idx_descriptor_previous, idx_descriptor_current,
+                                uv_prev_pt, uv_curr_pt, Matches_final[i].distance,
+                                "birth_reproj_gate", "opencv_sfm", nullptr);
+                            }
+                            continue;
+                          }
+                        }
+                        ++birth_gate_accepted;
+
                         G_ANCHOR Anchor;
                         Anchor.feat_type = "g_anchor";
                         Anchor.AnchorState = pt_n;
@@ -318,12 +348,50 @@ std::vector<int64> GMAP::Init_new_map_points()
                         int64 idx_anchor = Gmap.AnchorsDATA.size()-1;
 
                         Gmap.KeyFDATA[idx_current_KF].Idx_Matched_points.push_back(idx_anchor);
-                        Gmap.KeyFDATA[idx_current_KF].UV_Matched_points.push_back(keyPoints_current[idx_descriptor_current].pt);
+                        Gmap.KeyFDATA[idx_current_KF].UV_Matched_points.push_back(uv_curr_pt);
 
                         Gmap.KeyFDATA[idx_previous_KF].Idx_Matched_points.push_back(idx_anchor);
-                        Gmap.KeyFDATA[idx_previous_KF].UV_Matched_points.push_back(keyPoints_previous[idx_descriptor_previous].pt);    
+                        Gmap.KeyFDATA[idx_previous_KF].UV_Matched_points.push_back(uv_prev_pt);    
                     
                         idx_new_points.push_back(idx_anchor);
+
+                        if (gmap_landmark_audit::enabled()) {
+                          auto & A = Gmap.AnchorsDATA[idx_anchor];
+                          const auto geom = gmap_landmark_audit::compute_birth_geom(
+                            pt_n, Gmap.KeyFDATA[idx_previous_KF], Gmap.KeyFDATA[idx_current_KF],
+                            uv_prev_pt, uv_curr_pt, cam_parameters);
+                          gmap_landmark_audit::log_birth_accepted(
+                            A, idx_anchor, idx_previous_KF, idx_current_KF,
+                            Gmap.KeyFDATA[idx_previous_KF].keyframe_id,
+                            Gmap.KeyFDATA[idx_current_KF].keyframe_id,
+                            idx_descriptor_previous, idx_descriptor_current,
+                            uv_prev_pt, uv_curr_pt,
+                            Matches_final[i].distance, true, true, "opencv_sfm", geom,
+                            "parallax_deg,reproj_rms_px,baseline_depth_ratio");
+                          gmap_landmark_audit::log_association(
+                            A.audit_id, idx_anchor, idx_previous_KF,
+                            Gmap.KeyFDATA[idx_previous_KF].keyframe_id,
+                            idx_descriptor_previous,
+                            uv_prev_pt.x, uv_prev_pt.y,
+                            geom.reproj_prev_px, Matches_final[i].distance, "birth", true);
+                          gmap_landmark_audit::log_association(
+                            A.audit_id, idx_anchor, idx_current_KF,
+                            Gmap.KeyFDATA[idx_current_KF].keyframe_id,
+                            idx_descriptor_current,
+                            uv_curr_pt.x, uv_curr_pt.y,
+                            geom.reproj_curr_px, Matches_final[i].distance, "birth", true);
+                        }
+                        (void)birth_rms;
+                    } else if (gmap_landmark_audit::enabled()) {
+                      gmap_landmark_audit::log_birth_rejected(
+                        idx_previous_KF, idx_current_KF,
+                        Gmap.KeyFDATA[idx_previous_KF].keyframe_id,
+                        Gmap.KeyFDATA[idx_current_KF].keyframe_id,
+                        idx_descriptor_previous, idx_descriptor_current,
+                        keyPoints_previous[idx_descriptor_previous].pt,
+                        keyPoints_current[idx_descriptor_current].pt,
+                        Matches_final[i].distance, "min_depth_cheirality", "opencv_sfm",
+                        nullptr);
                     }
                 } 
     #else  // if sfm is not found
@@ -344,6 +412,29 @@ std::vector<int64> GMAP::Init_new_map_points()
           
           if(!(pt_n[0] == 0 && pt_n[1] == 0 && pt_n[2] == 0) )
           {
+            ++birth_gate_attempts;
+            double birth_rms = gmap_birth_reproj::kNaN;
+            if (PAR.Init_birth_reproj_gate_enable) {
+              birth_rms = gmap_birth_reproj::two_view_reproj_rms_px(
+                pt_n, Gmap.KeyFDATA[idx_previous_KF], Gmap.KeyFDATA[idx_current_KF],
+                uv2d, uv1d, cam_parameters);
+              if (!gmap_birth_reproj::passes_gate(
+                    true, birth_rms, PAR.Init_birth_reproj_max_rms_px)) {
+                ++birth_gate_rejected;
+                if (gmap_landmark_audit::enabled()) {
+                  gmap_landmark_audit::log_birth_rejected(
+                    idx_previous_KF, idx_current_KF,
+                    Gmap.KeyFDATA[idx_previous_KF].keyframe_id,
+                    Gmap.KeyFDATA[idx_current_KF].keyframe_id,
+                    idx_descriptor_previous, idx_descriptor_current, uv2d, uv1d,
+                    Matches_final[i].distance, "birth_reproj_gate", "analytic",
+                    nullptr);
+                }
+                continue;
+              }
+            }
+            ++birth_gate_accepted;
+
             G_ANCHOR Anchor;
             Anchor.feat_type = "g_anchor";
             Anchor.AnchorState = pt_n;
@@ -358,13 +449,46 @@ std::vector<int64> GMAP::Init_new_map_points()
             int64 idx_anchor = Gmap.AnchorsDATA.size()-1;
 
                         Gmap.KeyFDATA[idx_current_KF].Idx_Matched_points.push_back(idx_anchor);
-                        Gmap.KeyFDATA[idx_current_KF].UV_Matched_points.push_back(keyPoints_current[idx_descriptor_current].pt);
+                        Gmap.KeyFDATA[idx_current_KF].UV_Matched_points.push_back(uv1d);
 
                         Gmap.KeyFDATA[idx_previous_KF].Idx_Matched_points.push_back(idx_anchor);
-                        Gmap.KeyFDATA[idx_previous_KF].UV_Matched_points.push_back(keyPoints_previous[idx_descriptor_previous].pt);    
+                        Gmap.KeyFDATA[idx_previous_KF].UV_Matched_points.push_back(uv2d);    
             
             idx_new_points.push_back(idx_anchor);
-          }  
+
+            if (gmap_landmark_audit::enabled()) {
+              auto & A = Gmap.AnchorsDATA[idx_anchor];
+              const auto geom = gmap_landmark_audit::compute_birth_geom(
+                pt_n, Gmap.KeyFDATA[idx_previous_KF], Gmap.KeyFDATA[idx_current_KF],
+                uv2d, uv1d, cam_parameters);
+              gmap_landmark_audit::log_birth_accepted(
+                A, idx_anchor, idx_previous_KF, idx_current_KF,
+                Gmap.KeyFDATA[idx_previous_KF].keyframe_id,
+                Gmap.KeyFDATA[idx_current_KF].keyframe_id,
+                idx_descriptor_previous, idx_descriptor_current, uv2d, uv1d,
+                Matches_final[i].distance, true, true, "analytic", geom,
+                "parallax_deg,reproj_rms_px,baseline_depth_ratio");
+              gmap_landmark_audit::log_association(
+                A.audit_id, idx_anchor, idx_previous_KF,
+                Gmap.KeyFDATA[idx_previous_KF].keyframe_id,
+                idx_descriptor_previous, uv2d.x, uv2d.y,
+                geom.reproj_prev_px, Matches_final[i].distance, "birth", true);
+              gmap_landmark_audit::log_association(
+                A.audit_id, idx_anchor, idx_current_KF,
+                Gmap.KeyFDATA[idx_current_KF].keyframe_id,
+                idx_descriptor_current, uv1d.x, uv1d.y,
+                geom.reproj_curr_px, Matches_final[i].distance, "birth", true);
+            }
+            (void)birth_rms;
+          } else if (gmap_landmark_audit::enabled()) {
+            gmap_landmark_audit::log_birth_rejected(
+              idx_previous_KF, idx_current_KF,
+              Gmap.KeyFDATA[idx_previous_KF].keyframe_id,
+              Gmap.KeyFDATA[idx_current_KF].keyframe_id,
+              idx_descriptor_previous, idx_descriptor_current, uv2d, uv1d,
+              Matches_final[i].distance, "min_depth_or_zero_point", "analytic",
+              nullptr);
+          }
         }
      
     #endif
@@ -372,6 +496,31 @@ std::vector<int64> GMAP::Init_new_map_points()
     total_n_init_points = total_n_init_points + Matches_final.size();    
 
    int q = 10;
+   (void)q;
+
+   // Minimal diagnostic: emit cumulative birth-gate counts when gate enabled.
+   if (PAR.Init_birth_reproj_gate_enable) {
+     static int64_t last_logged_attempts = -1;
+     if (birth_gate_attempts != last_logged_attempts) {
+       last_logged_attempts = birth_gate_attempts;
+       cout << "gmap-> birth_reproj_gate attempts=" << birth_gate_attempts
+            << " accepted=" << birth_gate_accepted
+            << " rejected=" << birth_gate_rejected
+            << " max_rms_px=" << PAR.Init_birth_reproj_max_rms_px << endl;
+     }
+     if (const char * dir = std::getenv("GSLAM_LANDMARK_AUDIT_DIR")) {
+       if (dir[0] != '\0') {
+         std::ofstream f(std::string(dir) + "/birth_gate_counts.txt", std::ios::trunc);
+         if (f) {
+           f << "attempts=" << birth_gate_attempts
+             << " accepted=" << birth_gate_accepted
+             << " rejected=" << birth_gate_rejected
+             << " enable=" << (PAR.Init_birth_reproj_gate_enable ? 1 : 0)
+             << " max_rms_px=" << PAR.Init_birth_reproj_max_rms_px << "\n";
+         }
+       }
+     }
+   }
 
 return idx_new_points;
 }
