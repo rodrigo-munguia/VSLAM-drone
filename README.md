@@ -10,9 +10,6 @@ range-aided landmark initialization and Webots bring-up.
 *Webots `earth_aerial` flight with Plot2: downward camera features, estimated
 vs ground-truth pose, and local map / path.*
 
-This repository is a **standalone** stack (independent of the UAV Accelerator
-project).
-
 ## References
 
 1. R. Munguia, J. C. Trujillo, A. Grau,  
@@ -141,6 +138,32 @@ Useful options (forwarded through `launch2.sh`):
 ./launch4.sh --auto-start-plan true  # start mission without pressing 'a'
 ./launch4.sh --globalslam true       # optional Global SLAM
 ```
+
+### Flight / trajectory velocity limits
+
+Unified trajectory + tracker saturations (R5a production defaults). Override
+from any launcher (`launch4` / `launch3` / `launch2`):
+
+| Flag | Default | Meaning |
+|---|---:|---|
+| `--traj-v-max-xy` | 3.0 m/s | Planned path speed limit (horizontal) |
+| `--traj-v-max-z` | 1.5 m/s | Planned path speed limit (vertical) |
+| `--traj-v-max` | 3.0 m/s | Legacy isotropic traj vmax (prefer xy/z) |
+| `--traj-a-max` | 0.8 m/s² | Trajectory acceleration limit |
+| `--traj-j-max` | 2.0 m/s³ | Trajectory jerk limit |
+| `--tracker-v-max-xy` | 3.5 m/s | Tracker horizontal velocity setpoint sat |
+| `--tracker-v-max-z` | 1.5 m/s | Tracker vertical velocity setpoint sat |
+
+Example (slower cruise):
+
+```bash
+./launch4.sh --control-plan "$PWD/control_plan.txt" \
+  --traj-v-max-xy 1.5 --tracker-v-max-xy 2.0
+```
+
+There is no separate CLI flag to toggle LocalSLAM `Speed_update` (body-velocity
+EKF aiding). That is selected by the launcher YAML profile (`launch4` /
+`launch3` = velocity-free; `launch2` = velocity-aided).
 
 ### Other launchers
 
