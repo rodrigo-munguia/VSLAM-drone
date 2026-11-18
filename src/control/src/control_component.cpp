@@ -74,13 +74,16 @@ namespace control
     client_gslam_run_ = create_client<interfaces::srv::SimpleServ>("globalslam_run_service");
     client_webot_run_ = create_client<interfaces::srv::SimpleServ>("webot_service");
     client_plot_ = create_client<interfaces::srv::SimpleServ>("plot_service");
+    client_unified_traj_ =
+      create_client<interfaces::srv::UnifiedTrajectory>("unified_trajectory");
 
     RCLCPP_INFO(
       this->get_logger(),
-      "Control Slam_feedback=%s Slam_feedback_interface=%s odom_topic=%s",
+      "Control Slam_feedback=%s Slam_feedback_interface=%s odom_topic=%s Unified_mission=%s",
       PAR.Slam_feedback ? "true" : "false",
       PAR.Slam_feedback_interface.c_str(),
-      PAR.Odometry_topic.c_str());
+      PAR.Odometry_topic.c_str(),
+      PAR.Unified_mission ? "true" : "false");
 
     run_control_plan = false;
     control_thread_loop_run = true;
@@ -149,7 +152,9 @@ namespace control
      this->declare_parameter<double>("Mono_cam_2_robot_pos_y",0.0);
      this->declare_parameter<double>("Mono_cam_2_robot_pos_z",0.0);
      this->declare_parameter<double>("Explore_area_lambda_y",-0.25);  
-     this->declare_parameter<double>("Rec_Home_lambda_y",-0.5 ); 
+     this->declare_parameter<double>("Rec_Home_lambda_y",-0.5 );
+     this->declare_parameter<bool>("Unified_mission", true);
+     this->declare_parameter<double>("Unified_traj_timeout_s", 120.0);
       
     
     // Set parameter struct
@@ -213,7 +218,9 @@ namespace control
      this->get_parameter("Mono_cam_2_robot_pos_y",PAR.Mono_cam_2_robot_pos_y);
      this->get_parameter("Mono_cam_2_robot_pos_z",PAR.Mono_cam_2_robot_pos_z);
      this->get_parameter("Explore_area_lambda_y",PAR.Explore_area_lambda_y);
-     this->get_parameter("Rec_Home_lambda_y",PAR.Rec_Home_lambda_y);                 
+     this->get_parameter("Rec_Home_lambda_y",PAR.Rec_Home_lambda_y);
+     this->get_parameter("Unified_mission", PAR.Unified_mission);
+     this->get_parameter("Unified_traj_timeout_s", PAR.Unified_traj_timeout_s);
 
   }
   //-----------------------------------------------------------
@@ -223,6 +230,10 @@ namespace control
       "imu", 10, std::bind(&ControlQuad::Imu_callback, this, _1));
     sub_Gps_ = this->create_subscription<geometry_msgs::msg::PointStamped>(
       "webot_robot/gps", 10, std::bind(&ControlQuad::Gps_callback, this, _1));
+    sub_unified_traj_status_ =
+      this->create_subscription<interfaces::msg::UnifiedTrajectoryStatus>(
+        "unified_trajectory_status", 10,
+        std::bind(&ControlQuad::UnifiedTrajStatus_callback, this, _1));
     sub_Frame_ = this->create_subscription<interfaces::msg::Frame>(
       "Frame_topic", 10, std::bind(&ControlQuad::Frame_callback, this, _1));
 
@@ -484,11 +495,35 @@ namespace control
       if(cmd == "TakeOff")
       {
         cout << "control-> Take off" << endl;
-        auto request = std::make_shared<interfaces::srv::SimpleServ::Request>();
-        request->cmd = 't';              
-        auto res = client_webot_run_->async_send_request(request);
-        result = true;
-        std::this_thread::sleep_for(std::chrono::milliseconds(5000)); // 
+        // Wait for webot_service — async fire-and-forget left K_VERTICAL_THRUST=0
+        // on some S5a launches (vehicle sat on ground with cmd_z=1.8).
+        if (!client_webot_run_->wait_for_service(std::chrono::seconds(10))) {
+          cout << "control-> TakeOff: webot_service unavailable" << endl;
+          result = false;
+        } else {
+          auto request = std::make_shared<interfaces::srv::SimpleServ::Request>();
+          request->cmd = 't';
+          auto fut = client_webot_run_->async_send_request(request);
+          if (fut.wait_for(std::chrono::seconds(5)) == std::future_status::ready) {
+            result = true;
+          } else {
+            cout << "control-> TakeOff: webot_service call timed out" << endl;
+            result = false;
+          }
+          // R4d: after arming, latch unified ownership once (no legacy climb).
+          if (result && PAR.Unified_mission) {
+            auto ureq = std::make_shared<interfaces::srv::SimpleServ::Request>();
+            ureq->cmd = 'u';
+            auto ufut = client_webot_run_->async_send_request(ureq);
+            if (ufut.wait_for(std::chrono::seconds(5)) != std::future_status::ready) {
+              cout << "control-> TakeOff: unified latch timed out" << endl;
+              result = false;
+            } else {
+              cout << "control-> TakeOff: unified mode latched (arm only)" << endl;
+            }
+          }
+          std::this_thread::sleep_for(std::chrono::milliseconds(2000));
+        }
       }
       if(cmd == "Land")
       {
@@ -514,7 +549,11 @@ namespace control
         r_d.y = Control_plan[cmd_idx].args[1];
         r_d.z = Control_plan[cmd_idx].args[2];
         r_d.yaw = Control_plan[cmd_idx].args[3];
-        result = go_point(r_d);      
+        if (PAR.Unified_mission) {
+          result = go_point_unified(r_d);
+        } else {
+          result = go_point(r_d);
+        }
       }
       if(cmd == "StartSLAM")
       {
@@ -612,6 +651,10 @@ namespace control
   //----------------------------------------------------------------------------
   void ControlQuad::Handle_control_run_service(const std::shared_ptr<interfaces::srv::SimpleServ::Request> request,std::shared_ptr<interfaces::srv::SimpleServ::Response> response) 
     { 
+      // Match EKFslam SimpleServ: acknowledge handled cmds. Leaving the bool
+      // unset left response=false while the plan still started (B2/B3 false
+      // negative on ros2 service call).
+      bool handled = false;
       if (request->cmd == 'r')
       { 
         // Plan start/stop toggle. Keyboard uses 'a' → this cmd (not teleop 'r').
@@ -636,7 +679,8 @@ namespace control
           }
           
         } 
-        mutex_run_plan.unlock();         
+        mutex_run_plan.unlock();
+        handled = true;
       }
       if (request->cmd == 'h')
       {
@@ -651,6 +695,7 @@ namespace control
         RCLCPP_INFO(
           this->get_logger(),
           "[G6b-TXN] operator hold recovery via SimpleServ 'h'");
+        handled = true;
       }
       if (request->cmd == 'i')
       { 
@@ -666,6 +711,7 @@ namespace control
         // A6: invalidate radius before/with EKF re-init; re-arm on next odometry.
         invalidate_cached_radius(true);
         reinit_control();
+        handled = true;
       }
       if (request->cmd == 'c')
       {
@@ -676,8 +722,9 @@ namespace control
         mutex_cl.lock();
           cl_flag = true;
         mutex_cl.unlock();
+        handled = true;
       }
-
+      response->response = handled;
    }
 
   void ControlQuad::publish_zero_twist()

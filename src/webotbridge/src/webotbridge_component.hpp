@@ -67,6 +67,7 @@ private:
   rclcpp::Subscription<sensor_msgs::msg::Imu>::SharedPtr sub_Imu_;
   rclcpp::Subscription<sensor_msgs::msg::Image>::SharedPtr sub_Camera_;
   rclcpp::Subscription<sensor_msgs::msg::Range>::SharedPtr sub_Range_;
+  rclcpp::Subscription<sensor_msgs::msg::Range>::SharedPtr sub_LaserRange_;
   rclcpp::Subscription<geometry_msgs::msg::PointStamped>::SharedPtr sub_Gps_;
   rclcpp::Subscription<geometry_msgs::msg::Vector3>::SharedPtr sub_GpsSpeed_;
   rclcpp::Subscription<interfaces::msg::EstimatorReference>::SharedPtr sub_EstimatorRef_;
@@ -88,6 +89,7 @@ private:
   rclcpp::Publisher<sensor_msgs::msg::Imu>::SharedPtr pub_Imu_std_;
   rclcpp::Publisher<geometry_msgs::msg::TwistWithCovarianceStamped>::SharedPtr pub_BodyVel_std_;
   rclcpp::Publisher<sensor_msgs::msg::Range>::SharedPtr pub_DownwardRange_std_;
+  rclcpp::Publisher<sensor_msgs::msg::Range>::SharedPtr pub_LaserRange_std_;
   rclcpp::Publisher<mavros_msgs::msg::Altitude>::SharedPtr pub_Altitude_std_;
 
   sensor_msgs::msg::Image::SharedPtr img_msg;
@@ -96,6 +98,7 @@ private:
   void Imu_callback(const sensor_msgs::msg::Imu & msg);
   void Camera_callback(const sensor_msgs::msg::Image & msg);
   void Range_callback(const sensor_msgs::msg::Range & msg);
+  void LaserRange_callback(const sensor_msgs::msg::Range & msg);
   void Gps_callback(const geometry_msgs::msg::PointStamped & msg);
   void GpsSpeed_callback(const geometry_msgs::msg::Vector3 & msg);
   void EstimatorReference_callback(const interfaces::msg::EstimatorReference & msg);

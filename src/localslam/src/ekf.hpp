@@ -142,6 +142,13 @@ class EKF
           arma::mat::fixed<13, 13> & P_r,
           double & radius_uncertainty);
         /**
+         * Read-only copy of robot state and 13×13 covariance (does not clear
+         * NewRobotState_available). Used by regression tests / diagnostics.
+         */
+        void copy_robot_state_and_cov(
+          arma::vec::fixed<13> & x_r,
+          arma::mat::fixed<13, 13> & P_r) const;
+        /**
          * Apply Global SLAM translation delta (internal nav). Returns the
          * actual applied components after GS_/CL_ axis gates. Does not modify P.
          * close_loop resets Pc only when at least one axis is applied.

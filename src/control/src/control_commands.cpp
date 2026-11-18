@@ -1,10 +1,19 @@
 #include "control_component.hpp"
 #include "go_home_ru.hpp"
 #include "g6b_plan_interrupt.hpp"
+#include "xy_traj_ref.hpp"
+#include "mission_enu.hpp"
 #include "../../common/Vision/vision.hpp"
 #include "../../common/Transforms/Euler_to_Ra2b.hpp"
 #include <cmath>
 using namespace std;
+
+namespace {
+constexpr uint8_t kTrajSettled = interfaces::msg::UnifiedTrajectoryStatus::SETTLED;
+constexpr uint8_t kTrajRejected = interfaces::msg::UnifiedTrajectoryStatus::REJECTED;
+constexpr uint8_t kTrajCancelled = interfaces::msg::UnifiedTrajectoryStatus::CANCELLED;
+constexpr uint8_t kTrajFailed = interfaces::msg::UnifiedTrajectoryStatus::FAILED;
+}  // namespace
 
 
 
@@ -325,6 +334,146 @@ namespace control
 
     
     //-------------------------------------------------------------------------
+    void ControlQuad::UnifiedTrajStatus_callback(
+      const interfaces::msg::UnifiedTrajectoryStatus & msg)
+    {
+      std::lock_guard<std::mutex> lock(mutex_traj_status_);
+      traj_status_ = msg;
+      traj_status_fresh_ = true;
+    }
+
+    bool ControlQuad::cancel_unified_trajectory()
+    {
+      if (!client_webot_run_) {
+        return false;
+      }
+      if (!client_webot_run_->wait_for_service(std::chrono::seconds(2))) {
+        return false;
+      }
+      auto request = std::make_shared<interfaces::srv::SimpleServ::Request>();
+      request->cmd = 121;  // cancel traj → hold
+      auto fut = client_webot_run_->async_send_request(request);
+      return fut.wait_for(std::chrono::seconds(2)) == std::future_status::ready;
+    }
+
+    bool ControlQuad::go_point_unified(ROBOT_STATE &r_d)
+    {
+      // Mission sequencer only: one ACK traj request, wait for matching settle.
+      // No cmd_vel / go_point feedback while Unified_mission is active.
+      cout << "-> go_point_unified mission: " << r_d.x << " " << r_d.y
+           << " " << r_d.z << " " << r_d.yaw << endl;
+
+      if (!gps_spawn_valid_) {
+        cout << "control-> unified pointa: GPS spawn not latched" << endl;
+        return false;
+      }
+
+      double gps_x = 0.0, gps_y = 0.0, gps_z = 0.0;
+      mission_args_to_gps_enu(
+        gps_spawn_x_, gps_spawn_y_, gps_spawn_z_,
+        r_d.x, r_d.y, r_d.z,
+        gps_x, gps_y, gps_z);
+      cout << "control-> unified ENU target: " << gps_x << " " << gps_y
+           << " " << gps_z << endl;
+
+      if (!client_unified_traj_->wait_for_service(std::chrono::seconds(10))) {
+        cout << "control-> unified_trajectory service unavailable" << endl;
+        return false;
+      }
+
+      const uint32_t req_id = ++unified_traj_req_seq_;
+      {
+        std::lock_guard<std::mutex> lock(mutex_traj_status_);
+        traj_status_fresh_ = false;
+        traj_status_ = interfaces::msg::UnifiedTrajectoryStatus();
+        traj_status_.request_id = 0;
+        traj_status_.status = interfaces::msg::UnifiedTrajectoryStatus::IDLE;
+      }
+
+      auto request = std::make_shared<interfaces::srv::UnifiedTrajectory::Request>();
+      request->request_id = req_id;
+      request->x = gps_x;
+      request->y = gps_y;
+      request->z = gps_z;
+
+      in_plan_command_ = true;
+      auto fut = client_unified_traj_->async_send_request(request);
+      if (fut.wait_for(std::chrono::seconds(5)) != std::future_status::ready) {
+        cout << "control-> unified traj request timed out" << endl;
+        in_plan_command_ = false;
+        return false;
+      }
+      auto response = fut.get();
+      if (!response->accepted) {
+        cout << "control-> unified traj REJECTED id=" << req_id
+             << " status=" << static_cast<int>(response->status)
+             << " msg=" << response->message << endl;
+        in_plan_command_ = false;
+        return false;
+      }
+      cout << "control-> unified traj ACCEPTED id=" << req_id
+           << " msg=" << response->message << endl;
+
+      const double timeout_s =
+        (PAR.Unified_traj_timeout_s > 1.0) ? PAR.Unified_traj_timeout_s : 120.0;
+      const auto t0 = std::chrono::steady_clock::now();
+      bool run = true;
+      bool success = false;
+
+      while (run && !success) {
+        mutex_run_plan.lock();
+        run = run_control_plan;
+        mutex_run_plan.unlock();
+        if (!run) {
+          cout << "control-> unified traj cancelled (plan stop) id=" << req_id << endl;
+          (void)cancel_unified_trajectory();
+          break;
+        }
+
+        interfaces::msg::UnifiedTrajectoryStatus st;
+        bool fresh = false;
+        {
+          std::lock_guard<std::mutex> lock(mutex_traj_status_);
+          st = traj_status_;
+          fresh = traj_status_fresh_;
+        }
+
+        if (fresh && st.request_id == req_id) {
+          if (st.status == kTrajSettled) {
+            cout << "control-> unified SETTLED id=" << req_id
+                 << " e=(" << st.ex << "," << st.ey << "," << st.ez << ")"
+                 << " vh=" << st.vh << " vz=" << st.vz << endl;
+            success = true;
+            break;
+          }
+          if (st.status == kTrajRejected || st.status == kTrajFailed ||
+              st.status == kTrajCancelled) {
+            cout << "control-> unified traj FAILED id=" << req_id
+                 << " status=" << static_cast<int>(st.status)
+                 << " msg=" << st.message << endl;
+            // No silent legacy fallback.
+            break;
+          }
+        }
+
+        const double elapsed = std::chrono::duration<double>(
+          std::chrono::steady_clock::now() - t0).count();
+        if (elapsed > timeout_s) {
+          cout << "control-> unified traj TIMEOUT id=" << req_id
+               << " after " << elapsed << " s" << endl;
+          (void)cancel_unified_trajectory();
+          break;
+        }
+        std::this_thread::sleep_for(std::chrono::milliseconds(50));
+      }
+
+      in_plan_command_ = false;
+      if (!success) {
+        cout << "control-> Something went wrong with go_point_unified.." << endl;
+      }
+      return success;
+    }
+
     bool ControlQuad::go_point(ROBOT_STATE &r_d)
     {
         cout << "-> go to point (a): " << r_d.x << " " << r_d.y << "  " << r_d.z << " " << r_d.yaw   << endl;
@@ -337,11 +486,22 @@ namespace control
         mutex_run_plan.unlock();
 
         in_plan_command_ = true;
+        // CTRL-R2: keep prior v_ref across waypoints (smooth transition).
+        // Cleared only on accept / plan exit. No settle/creep latch state.
                
         bool x_s = false;
         bool y_s = false;
         bool z_s = false;
         bool yaw_s = false;
+        // Acceptance confirms settle — not used as a braking mode.
+        int accept_dwell_ticks = 0;
+        const int accept_dwell_required = 10; // 10 * 50 ms = 0.5 s
+        double z_prev_for_rate = r_c.z;
+        double x_prev_for_rate = r_c.x;
+        double y_prev_for_rate = r_c.y;
+        double vx_nav = 0.0;
+        double vy_nav = 0.0;
+        auto last_rate_sample = std::chrono::steady_clock::now();
 
         while(run == true && succes == false )
         {
@@ -362,6 +522,9 @@ namespace control
                 double e_y = r_d.y - r_c.y;
                 double e_z = r_d.z - r_c.z;
                 double e_yaw = r_d.yaw - yaw;
+                double x_now = r_c.x;
+                double y_now = r_c.y;
+                double z_now = r_c.z;
                 logger_gp->log(r_d.x,r_c.x,r_d.y,r_c.y,r_d.z,r_c.z,r_d.yaw,yaw);
             mutex_robot_state.unlock();
             
@@ -374,15 +537,41 @@ namespace control
             if(abs(e_z) < PAR.cp_z)z_s = true;
                 else z_s = false;
             if(abs(e_yaw) < PAR.cp_yaw)yaw_s = true; 
-                else yaw_s = false;           
+                else yaw_s = false;
+
+            // Vertical / horizontal rates from successive GPS/nav samples (m/s).
+            const auto now_rate = std::chrono::steady_clock::now();
+            const double dt_rate = std::chrono::duration<double>(now_rate - last_rate_sample).count();
+            double abs_vz = 0.0;
+            double abs_vh = 0.0;
+            if (dt_rate > 1e-3) {
+                vx_nav = (x_now - x_prev_for_rate) / dt_rate;
+                vy_nav = (y_now - y_prev_for_rate) / dt_rate;
+                abs_vz = std::abs((z_now - z_prev_for_rate) / dt_rate);
+                abs_vh = std::hypot(vx_nav, vy_nav);
+                x_prev_for_rate = x_now;
+                y_prev_for_rate = y_now;
+                z_prev_for_rate = z_now;
+                last_rate_sample = now_rate;
+            }
+            // Low-speed terminal gate (reject fly-through). Unchanged vs S5a.
+            // vz 0.45: GPS finite-diff at 50 ms is noisy near hover.
+            const bool vz_ok = abs_vz < 0.45; // m/s
+            const bool vh_ok = abs_vh < 0.50; // m/s
             
             bool cl_loop_event = false;
             mutex_cl.lock();
              cl_loop_event = cl_flag;
             mutex_cl.unlock();
 
+            if (x_s && y_s && z_s && yaw_s && vz_ok && vh_ok) {
+                accept_dwell_ticks++;
+            } else {
+                accept_dwell_ticks = 0;
+            }
+
             // if a close loop event is detected, stop, and return with true; 
-            if((x_s == true && y_s == true && z_s == true && yaw_s == true) || cl_loop_event == true)
+            if((accept_dwell_ticks >= accept_dwell_required) || cl_loop_event == true)
             {   
                 auto twist_msg = geometry_msgs::msg::Twist();
                 twist_msg.linear.x = 0;    // Linear velocity along x-axis
@@ -390,39 +579,43 @@ namespace control
                 twist_msg.linear.z = 0;    // Linear velocity along y-axis                         
                 twist_msg.angular.z = 0;
                 pub_cmd_vel_->publish(twist_msg);
+                v_ref_x_ = 0.0;
+                v_ref_y_ = 0.0;
                 in_plan_command_ = false;
                 cv_coord_quiet_.notify_all();
                 return true;
             }
             
             //--------------------------------------------------------
-            // --- compute x-y control -------------------------------            
-            double a = yaw;                            
-            arma::mat::fixed<2,2> Rn2b =  {{cos(a), sin(a)},
-                                        { -sin(a), cos(a)}};
-            arma::vec::fixed<2> e_xy_N;
-            e_xy_N[0] = e_x;
-            e_xy_N[1] = e_y;
-            
-            arma::vec::fixed<2> e_xy_B;
-            // get x-y error in body frame
-            e_xy_B = Rn2b*e_xy_N;        
-                //cout << "e_xy_B x: " << e_xy_B[0] << " e_xy_B y: " << e_xy_B[1] << endl;                       
-            
-            // Apply logarithmic smoothing to the position error
-            double kp_x = PAR.kp_x;
-            double kp_y = PAR.kp_y;
-            double es_x_B = kp_x*log10(fabs(e_xy_B[0]) + 1.0) * (e_xy_B[0] >= 0 ? 1.0 : -1.0);
-            double es_y_B = kp_y*log10(fabs(e_xy_B[1]) + 1.0) * (e_xy_B[1] >= 0 ? 1.0 : -1.0);           
-                //cout << es_x_B << " " << es_y_B <<  endl;
-            // Calculate the control signal based on the smoothed error
-            double controlSignal_x = es_x_B ;
-            double controlSignal_y = es_y_B ;
-            // Apply control signal limits if necessary
-            double maxControlSignal_xy = PAR.maxControlSignal_xy;  // Maximum allowed control signal
-            double minControlSignal_xy = PAR.minControlSignal_xy; // Minimum allowed control signal
+            // --- compute x-y control (CTRL-R2) ----------------------
+            // One continuous braking-constrained position→velocity law.
+            // No settle latch, creep, near-field dual vmax, or closing override.
+            const double kp_xy = 0.5 * (PAR.kp_x + PAR.kp_y);
+            const double vmax_xy = std::abs(PAR.maxControlSignal_xy);
+            // Command envelope below plant brake (~1–1.5 m/s²) so taper starts
+            // early (vmax²/(2·0.55)≈8.2 m at 3 m/s). Kd damps near-hover XY
+            // (Test A: pure P caused Y limit cycle during climb WP).
+            // t_lag budgets S3/S2/S1 response (attitude slew ≈0.5 s).
+            const double kd_xy = 0.85;
+            const double a_brake = 0.55;  // m/s²
+            const double t_lag = 0.40;    // s
+            const double a_acc = 1.0;     // m/s² reference slew (speed up)
+            const double a_dec = 2.5;     // m/s² reference slew (slow down)
+            const double dt_cmd = 0.05;   // matches sleep below
+            xy_traj_step_body(
+              e_x, e_y, vx_nav, vy_nav, yaw,
+              vmax_xy, kp_xy, kd_xy, a_brake, t_lag,
+              a_acc, a_dec, dt_cmd,
+              v_ref_x_, v_ref_y_);
+            double controlSignal_x = v_ref_x_;
+            double controlSignal_y = v_ref_y_;
+            // Keep legacy per-axis floor/ceil as a hard safety net.
+            const double maxControlSignal_xy = PAR.maxControlSignal_xy;
+            const double minControlSignal_xy = PAR.minControlSignal_xy;
             controlSignal_x = std::max(std::min(controlSignal_x, maxControlSignal_xy), minControlSignal_xy);
             controlSignal_y = std::max(std::min(controlSignal_y, maxControlSignal_xy), minControlSignal_xy);
+            v_ref_x_ = controlSignal_x;
+            v_ref_y_ = controlSignal_y;
                          
             //--------------------------------------------------------
             // --- compute z control -------------------------------  
@@ -447,8 +640,11 @@ namespace control
             //----- sent vel coomands to robot----------------------------
             auto twist_msg = geometry_msgs::msg::Twist();
             twist_msg.linear.x = controlSignal_x;    // Linear velocity along x-axis
-            twist_msg.linear.y = -controlSignal_y;    // Linear velocity along y-axis
-            twist_msg.linear.z = controlSignal_z;    // Linear velocity along y-axis                         
+            // Keep legacy Y negate: ControlQuad GPS state uses y=-gps_y, while
+            // the S3 driver body-velocity loop uses ENU GPS directly. Removing
+            // this minus caused a +feedback Y flyaway (S4 attempt3).
+            twist_msg.linear.y = -controlSignal_y;
+            twist_msg.linear.z = controlSignal_z;
             twist_msg.angular.z = controlSignal_yaw;
 
             //cout << "x-y-z: " << r_c.x << " " << r_c.y << " " << r_c.z << " " << r_c.yaw << " u: " << controlSignal_x << " " << controlSignal_y << " " << controlSignal_z << " " << controlSignal_yaw << endl;

@@ -112,6 +112,13 @@ if(BUILD_TESTING)
       target_include_directories(test_sensor_conversions PRIVATE src)
     endif()
 
+    ament_add_gtest(test_range_acceptance_params
+      test/test_range_acceptance_params.cpp)
+    if(TARGET test_range_acceptance_params)
+      ament_target_dependencies(test_range_acceptance_params rclcpp)
+      target_include_directories(test_range_acceptance_params PRIVATE src)
+    endif()
+
     ament_add_gtest(test_odometry_conversions test/test_odometry_conversions.cpp
       src/odometry_conversions.cpp
       ../common/Transforms/Euler_to_Ra2b.cpp)
@@ -155,6 +162,21 @@ if(BUILD_TESTING)
     ament_add_gtest(test_ls_pos_apply_policy test/test_ls_pos_apply_policy.cpp)
     if(TARGET test_ls_pos_apply_policy)
       target_include_directories(test_ls_pos_apply_policy PRIVATE src)
+    endif()
+
+    # E5e-A3a: Euler P = diagmat(p_ini) regression (links estimator library).
+    ament_add_gtest(test_euler_cov_init test/test_euler_cov_init.cpp)
+    if(TARGET test_euler_cov_init)
+      target_link_libraries(test_euler_cov_init localslam_component)
+      target_include_directories(test_euler_cov_init PRIVATE src ../common)
+    endif()
+
+    # E5e-G2: horizontal-plane range init geometry + Jacobian finite differences.
+    ament_add_gtest(test_range_horizontal_plane_init
+      test/test_range_horizontal_plane_init.cpp)
+    if(TARGET test_range_horizontal_plane_init)
+      target_link_libraries(test_range_horizontal_plane_init localslam_component)
+      target_include_directories(test_range_horizontal_plane_init PRIVATE src ../common)
     endif()
   endif()
 endif()

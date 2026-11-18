@@ -121,7 +121,16 @@ struct parameters
     double Range_sensor_offset; // offset for range measurements
     double Range_sensor_max_range_pattern; // max range of pattern, from sensor beam pattern
     double Range_sensor_max_r_max; // maximun radius of elipsoid at (max range of pattern) from sensor beam pattern
-    double Range_sensor_max_range_operation; // max operation range of sensor 
+    double Range_sensor_max_range_operation; // max operation range of sensor
+    // B2: exclusive software gates for range↔frame association / undelayed init
+    // (sonar defaults: 0.4 < r < 6.0 associate; r > 0.5 may undelayed-init).
+    double Range_assoc_min_m;
+    double Range_assoc_max_m;
+    double Range_init_min_m;
+    // B4: when false, altitude never substitutes into FRAME.range for
+    // undelayed_range init. Default true preserves sonar behavior.
+    // Does not disable Altitude_update / vertical EKF.
+    bool Range_allow_altitude_fallback;
 
     // Monocular camera parameters
     double Mono_cam_frame_period;  // 1/frame_rate  

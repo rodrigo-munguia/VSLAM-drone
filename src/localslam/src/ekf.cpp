@@ -77,6 +77,9 @@ void EKF::init_euler_system_statet(DATA &dat)
   //P = eye(PAR.Robot_state_size,PAR.Robot_state_size)*numeric_limits<double>::epsilon();
   double eps = numeric_limits<double>::epsilon()  ;
   arma::vec::fixed<13> p_ini = {0, .01, .01, .01, .01, .01, .01, eps, eps, eps, .0001, .0001, .0001};
+  // E5e-A3a: assign intended initial variances (matches quat init path).
+  // p_ini entries are variances (rad^2 / (m/s)^2 / …), length 13 ≡ Robot_state_size.
+  P = arma::diagmat(p_ini);
 
   //-------------------------------------------------------------------------------  
   cam_parameters.distortions = &PAR.Mono_cam_distortions[0];
@@ -571,6 +574,14 @@ bool EKF::get_RobotStateSnapshot(
     return true;
   }
   return false;
+}
+
+void EKF::copy_robot_state_and_cov(
+  arma::vec::fixed<13> & x_r,
+  arma::mat::fixed<13, 13> & P_r) const
+{
+  x_r = x.subvec(0, 12);
+  P_r = P(arma::span(0, 12), arma::span(0, 12));
 }
 //-----------------------------------------
 // Rodrigo M. 2022

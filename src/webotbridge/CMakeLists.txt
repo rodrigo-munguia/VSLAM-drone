@@ -105,6 +105,14 @@ if(BUILD_TESTING)
       target_include_directories(test_gt_path_epoch PRIVATE src)
       ament_target_dependencies(test_gt_path_epoch nav_msgs geometry_msgs builtin_interfaces)
     endif()
+    # CTRL-S3b: Rn2rG must be eye(3,3), not bare eye() on empty mat.
+    ament_add_gtest(test_rn2r_init test/test_rn2r_init.cpp)
+    if(TARGET test_rn2r_init)
+      target_include_directories(test_rn2r_init PRIVATE src)
+      target_compile_definitions(test_rn2r_init PRIVATE
+        ARMA_DONT_USE_WRAPPER ARMA_USE_BLAS ARMA_USE_LAPACK)
+      target_link_libraries(test_rn2r_init ${BLAS_LIBRARIES} ${LAPACK_LIBRARIES})
+    endif()
   endif()
 endif()
 

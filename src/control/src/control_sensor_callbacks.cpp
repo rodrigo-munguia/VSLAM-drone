@@ -84,6 +84,11 @@ namespace control
       x_0 = msg.point.x;
       y_0 = -msg.point.y;
       z_0 = msg.point.z;
+      // R4d: raw GPS ENU spawn (no Y negation) for unified mission mapping.
+      gps_spawn_x_ = msg.point.x;
+      gps_spawn_y_ = msg.point.y;
+      gps_spawn_z_ = msg.point.z;
+      gps_spawn_valid_ = true;
       init_flag = true;
       return;
     }

@@ -179,6 +179,12 @@ private:
   void ManageBuffer(DATA &dat);
   mutable std::mutex mutex_dat;
 
+  // LSLAM-PERF-W1: DataBuffer / image callback counters (env-gated profiling).
+  uint64_t diag_frames_callback_rx_{0};
+  uint64_t diag_frames_enqueued_{0};
+  uint64_t diag_frames_overwritten_{0};
+  uint64_t diag_frames_consumed_{0};
+
   thread ekf_loop_;
   void EKF_LOOP();
   bool ekf_thread_loop_run;

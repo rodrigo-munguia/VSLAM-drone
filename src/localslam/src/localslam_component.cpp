@@ -13,6 +13,7 @@
 // limitations under the License.
 
 #include "localslam_component.hpp"
+#include "visual_profile.hpp"
 
 #include <chrono>
 #include <iostream>
@@ -73,6 +74,8 @@ EKFslam::EKFslam(const rclcpp::NodeOptions & options)
 {
   setParameters();
 
+  validate_range_acceptance_params(
+    PAR.Range_assoc_min_m, PAR.Range_assoc_max_m, PAR.Range_init_min_m);
   validate_altitude_input_mode(PAR.Altitude_input_mode);
   // Throws on unsupported Sensor_input_mode / altitude combo
   {
@@ -585,6 +588,19 @@ void EKFslam::EKF_LOOP()
 
         
         } // if ekf is initilized
+
+        // LSLAM-PERF-W1: flush buffered stage/convert rows + DataBuffer counters.
+        if (localslam::visual_profile::enabled()) {
+          static auto next_db = std::chrono::steady_clock::now();
+          const auto now_db = std::chrono::steady_clock::now();
+          if (now_db >= next_db) {
+            next_db = now_db + std::chrono::seconds(1);
+            localslam::visual_profile::flush_pending();
+            localslam::visual_profile::write_databuffer_row(
+              diag_frames_enqueued_, diag_frames_overwritten_, diag_frames_consumed_,
+              diag_frames_callback_rx_);
+          }
+        }
 
         std::this_thread::sleep_for(std::chrono::milliseconds(1)); // sleep a short period of time to save proccesor use
 

@@ -274,19 +274,26 @@ void EKF::Visual_update_e_init_feat_wr(FRAME *frame)
 
          arma::vec::fixed<3> m = hn/arma::norm(hn); // normalized vector (in the nav frame) pointing in the direction of the feature
 
-         //-- compute feature depth from range measurement
-         arma::vec::fixed<3> v = {0,0,1};
-         arma::vec::fixed<3> vn =  Rc2n*v;
-         double depth = (frame->range + PAR.Range_sensor_offset) /arma::dot(m,vn);   
-        //---------         
+         // E5e-G2: horizontal ground plane through the optical-axis laser hit.
+         // Range_sensor_offset is a scalar calibrated range bias (meters), not a
+         // sensor-origin displacement — added to the measured Euclidean slant range.
+         // Hit: p_hit = p_C + r_eff * vn;  plane: z = e_z·p_hit;  λ = r_eff * vz / mz.
+         arma::vec::fixed<3> v = {0, 0, 1};
+         arma::vec::fixed<3> vn = Rc2n * v;
+         const double range_eff = frame->range + PAR.Range_sensor_offset;
+         double depth = 0.0;
+         if (!range_horizontal_plane_lambda(m, vn, range_eff, &depth)) {
+           continue;  // parallel/behind/nonfinite — defer this feature
+         }
 
-        arma::vec::fixed<3> d_v =  depth*m;    //  d_v = Rr2n*Rc2r*P_c
+         arma::vec::fixed<3> d_v = depth * m;
 
-        //           P_n = Rr2n*Rc2r*P_c +  (Rr2n*t_c2r + t_r2n)
-        arma::vec new_yi =  d_v    +      ( Rr2n*t_c2r  + x.subvec(7,9));   // compute new Euclidean (XYZ) feature map 
-       
-       //cout << new_yi << endl;      
-       
+         //           P_n = Rr2n*Rc2r*P_c +  (Rr2n*t_c2r + t_r2n)
+         arma::vec new_yi = d_v + (Rr2n * t_c2r + x.subvec(7, 9));
+         if (!new_yi.is_finite()) {
+           continue;
+         }
+
        // vector state augmentation
        int old_x_size = x.size();      
        x.resize( old_x_size +3 ); // resize state vector
@@ -333,10 +340,10 @@ void EKF::Visual_update_e_init_feat_wr(FRAME *frame)
        //------------------------------------------------------------------------------------------------  
          
        
-       //---- get Initialization Jacobians
+       //---- get Initialization Jacobians (horizontal-plane model; not camera-normal)
        arma::mat::fixed<3,13> dy_dx;  
        arma::mat::fixed<3,3> dy_duvr; 
-       Jac_e_init_feat_func(uvd, x, cam_parameters,Rc2r,t_c2r, depth,dy_dx, dy_duvr);
+       Jac_e_init_feat_wr_horizontal(uvd, x, cam_parameters, Rc2r, t_c2r, range_eff, dy_dx, dy_duvr);
      
       arma::mat dh_dx;
       dh_dx = zeros(3,old_x_size);

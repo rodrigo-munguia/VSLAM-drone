@@ -1,7 +1,9 @@
 #include "ekf.hpp"
+#include "visual_profile.hpp"
 #include "../../common/Vision/vision.hpp"
 #include "../../common/Transforms/Euler_to_Ra2b.hpp"
 #include "ekf_Jacobians.hpp"
+#include <chrono>
 
 
 
@@ -158,7 +160,16 @@ int EKF::Visual_match_feats_by_descriptors_e(FRAME *frame)
         vector<cv::KeyPoint> Candidate_keyPoints;
         cv::Mat CandidateDescriptors;
         cv::Ptr<cv::FeatureDetector> detector = cv::ORB::create(1000, 1.2f, 8, 16,0,2, cv::ORB::FAST_SCORE,31, 5);
-        detector->detectAndCompute(frame->image,cv::Mat(), Candidate_keyPoints,CandidateDescriptors);
+        {
+          using clock = std::chrono::steady_clock;
+          const bool prof = localslam::visual_profile::enabled();
+          const auto t_det = clock::now();
+          detector->detectAndCompute(frame->image,cv::Mat(), Candidate_keyPoints,CandidateDescriptors);
+          if (prof) {
+            localslam::visual_profile::note_detect_match_ms(
+              localslam::visual_profile::ms_since(t_det));
+          }
+        }
         
         // obtain matches for visual features predicted to appear in the image.
         std::vector<cv::DMatch> matches;

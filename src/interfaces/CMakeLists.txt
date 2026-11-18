@@ -33,9 +33,11 @@ rosidl_generate_interfaces(${PROJECT_NAME}
   "msg/OdometryMeta.msg"
   "msg/CorrectionFeedbackAccepted.msg"
   "msg/GlobalLoopCommitted.msg"
+  "msg/UnifiedTrajectoryStatus.msg"
   "srv/SimpleServ.srv"
   "srv/LSposUpdate.srv"
   "srv/CorrectionCoordinate.srv"
+  "srv/UnifiedTrajectory.srv"
   DEPENDENCIES sensor_msgs geometry_msgs std_msgs builtin_interfaces
     unique_identifier_msgs
 )

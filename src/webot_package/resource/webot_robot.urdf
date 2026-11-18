@@ -25,7 +25,16 @@
             </ros>
         </device>
 
-        
+        <device reference="ds_tfa300l" type="DistanceSensor">
+            <ros>
+                <topicName>/ds_tfa300l</topicName>
+                <enabled>true</enabled>
+                <updateRate>50</updateRate>
+                <alwaysOn>true</alwaysOn>
+            </ros>
+        </device>
+
+
 
         <plugin type="webots_ros2_driver::Ros2IMU">
             <enabled>true</enabled>

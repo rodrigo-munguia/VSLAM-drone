@@ -1,0 +1,13 @@
+# B3/B4: TFA300-L-inspired laser range acceptance overlay for /lslam only.
+# Merged when --range-sensor tfa300l on launch2/3 (and launch4 if remapped).
+# Does NOT set Speed_update, Sigma_a, Sigma_cam_uv,
+# Visual_update_min_vel_for_update_feats, confidence aperture, or depth-σ.
+#
+# Full laser velocity-free profile (gates + confidence + fallback OFF) lives in
+# config/quad_params_no_velocity_tfa300l.yaml (./launch4.sh). Keep this overlay
+# limited to association/init gates to avoid conflicting definitions.
+/lslam:
+  ros__parameters:
+    Range_assoc_min_m: 0.1
+    Range_assoc_max_m: 150.0
+    Range_init_min_m: 0.5

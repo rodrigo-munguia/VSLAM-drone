@@ -69,6 +69,14 @@ def generate_launch_description():
     ]
     if ip_address:
         cmd.append('--ip-address=' + ip_address)
+    # R5a production: traj XY/Z + tracker XY/Z (defaults in DeclareLaunchArgument).
+    traj_v_max = LaunchConfiguration('traj_v_max')
+    traj_v_max_xy = LaunchConfiguration('traj_v_max_xy')
+    traj_v_max_z = LaunchConfiguration('traj_v_max_z')
+    traj_a_max = LaunchConfiguration('traj_a_max')
+    traj_j_max = LaunchConfiguration('traj_j_max')
+    tracker_v_max_xy = LaunchConfiguration('tracker_v_max_xy')
+    tracker_v_max_z = LaunchConfiguration('tracker_v_max_z')
     cmd.extend([
         driver_exec,
         '--ros-args',
@@ -76,6 +84,13 @@ def generate_launch_description():
         'robot_description:=' + robot_description_path,
         '-p',
         'use_sim_time:=true',
+        '-p', ['traj_v_max:=', traj_v_max],
+        '-p', ['traj_v_max_xy:=', traj_v_max_xy],
+        '-p', ['traj_v_max_z:=', traj_v_max_z],
+        '-p', ['traj_a_max:=', traj_a_max],
+        '-p', ['traj_j_max:=', traj_j_max],
+        '-p', ['tracker_v_max_xy:=', tracker_v_max_xy],
+        '-p', ['tracker_v_max_z:=', tracker_v_max_z],
     ])
 
     # Match WebotsController: WEBOTS_HOME -> driver package prefix so the
@@ -84,6 +99,8 @@ def generate_launch_description():
     # unless WEBOT_DRIVER_LOG_DIR is set (driver resolves under ~/.ros/...).
     log_dir = os.path.join(os.path.expanduser('~'), '.ros', 'webot_package_logs')
     os.makedirs(log_dir, exist_ok=True)
+    # Env mirrors launch args so MavicDriver (inner mavic_driver node) sees
+    # overrides; CLI -p alone does not reach the plugin-created node.
     webot_robot_driver = ExecuteProcess(
         cmd=cmd,
         output='screen',
@@ -93,6 +110,13 @@ def generate_launch_description():
         additional_env={
             'WEBOTS_HOME': driver_prefix,
             'WEBOT_DRIVER_LOG_DIR': log_dir,
+            'WEBOT_TRAJ_V_MAX': traj_v_max,
+            'WEBOT_TRAJ_V_MAX_XY': traj_v_max_xy,
+            'WEBOT_TRAJ_V_MAX_Z': traj_v_max_z,
+            'WEBOT_TRAJ_A_MAX': traj_a_max,
+            'WEBOT_TRAJ_J_MAX': traj_j_max,
+            'WEBOT_TRACKER_V_MAX_XY': tracker_v_max_xy,
+            'WEBOT_TRACKER_V_MAX_Z': tracker_v_max_z,
         },
     )
 
@@ -101,6 +125,41 @@ def generate_launch_description():
             'world',
             default_value='mars.wbt',
             description='World file under webot_package/worlds',
+        ),
+        DeclareLaunchArgument(
+            'traj_v_max',
+            default_value='3.0',
+            description='Legacy isotropic traj vmax [m/s]; prefer traj_v_max_xy/z',
+        ),
+        DeclareLaunchArgument(
+            'traj_v_max_xy',
+            default_value='3.0',
+            description='R5a production traj XY vmax [m/s]; ≤0 inherits traj_v_max',
+        ),
+        DeclareLaunchArgument(
+            'traj_v_max_z',
+            default_value='1.5',
+            description='R5a production traj Z vmax [m/s]; ≤0 inherits traj_v_max',
+        ),
+        DeclareLaunchArgument(
+            'traj_a_max',
+            default_value='0.8',
+            description='Trajectory amax [m/s²] (R5a production 0.8)',
+        ),
+        DeclareLaunchArgument(
+            'traj_j_max',
+            default_value='2.0',
+            description='Trajectory jmax [m/s³] (R5a production 2.0)',
+        ),
+        DeclareLaunchArgument(
+            'tracker_v_max_xy',
+            default_value='3.5',
+            description='Tracker horizontal v_sp sat [m/s] (R5a production 3.5)',
+        ),
+        DeclareLaunchArgument(
+            'tracker_v_max_z',
+            default_value='1.5',
+            description='Tracker vertical v_sp sat [m/s] (R5a production 1.5)',
         ),
         webots,
         webots._supervisor,

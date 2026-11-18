@@ -135,6 +135,11 @@ def _build(context, *args, **kwargs):
             'Local feedback / global_corrections requires use_globalslam:=true '
             '(./launch2.sh --globalslam true ...).')
 
+    range_sensor = LaunchConfiguration('range_sensor').perform(context).strip().lower()
+    if range_sensor not in ('sonar', 'tfa300l'):
+        raise RuntimeError(
+            f"range_sensor must be 'sonar' or 'tfa300l' (got {range_sensor!r})")
+
     with open(config_file, 'r') as file:
         raw = yaml.safe_load(file)
 
@@ -145,6 +150,35 @@ def _build(context, *args, **kwargs):
         slam_feedback=slam_feedback if slam_feedback.strip() != '' else None,
         slam_feedback_interface=slam_iface if slam_iface.strip() != '' else None,
     )
+
+    # B3: optional /lslam-only overlay (gates); never touches velocity/Σ_a/uv.
+    range_overlay_path = ''
+    if range_sensor == 'tfa300l':
+        candidates = [
+            os.path.join(bringup_share, 'config', 'range_sensor_tfa300l.yaml'),
+            os.path.join(os.getcwd(), 'config', 'range_sensor_tfa300l.yaml'),
+        ]
+        for cand in candidates:
+            if os.path.isfile(cand):
+                range_overlay_path = os.path.abspath(cand)
+                break
+        if not range_overlay_path:
+            raise RuntimeError(
+                'range_sensor=tfa300l overlay not found '
+                '(install ekf_monoslam_bringup or run from repo root)')
+        with open(range_overlay_path, 'r') as of:
+            overlay_raw = yaml.safe_load(of) or {}
+        overlay_lslam = dict(
+            overlay_raw.get('/lslam', {}).get('ros__parameters', {}) or {})
+        forbidden = {
+            'Speed_update', 'Visual_update_min_vel_for_update_feats',
+            'Sigma_a', 'Sigma_cam_uv'}
+        clash = forbidden.intersection(overlay_lslam.keys())
+        if clash:
+            raise RuntimeError(
+                'range_sensor overlay must not set velocity/noise keys: '
+                + ', '.join(sorted(clash)))
+        lslam_params.update(overlay_lslam)
 
     plan_override = LaunchConfiguration('control_plan').perform(context)
     if plan_override:
@@ -161,12 +195,15 @@ def _build(context, *args, **kwargs):
     if calibration_source:
         lslam_params['Calibration_source'] = calibration_source
 
+    downward_range_topic = (
+        '/laser_range' if range_sensor == 'tfa300l' else '/downward_range')
+
     lslam_remaps = [
         ('~/image', '/image'),
         ('~/camera_info', '/camera_info'),
         ('~/imu', '/imu_out'),
         ('~/body_velocity', '/body_velocity'),
-        ('~/downward_range', '/downward_range'),
+        ('~/downward_range', downward_range_topic),
         ('~/altitude', '/altitude'),
         ('~/odometry', '/odometry'),
         ('~/odometry_meta', '/EKFslam/odometry_meta'),
@@ -180,6 +217,7 @@ def _build(context, *args, **kwargs):
         ('camera_info', '/camera_info'),
         ('imu', '/imu'),
         ('ds0', '/ds0'),
+        ('ds_tfa300l', '/ds_tfa300l'),
         ('EKFslam/estimator_reference', '/EKFslam/estimator_reference'),
         ('ground_truth/path', '/ground_truth/path'),
     ]
@@ -219,7 +257,13 @@ def _build(context, *args, **kwargs):
             remappings=control_remaps),
     ]
 
-    extra_actions = []
+    extra_actions = [
+        LogInfo(msg=[
+            f'B3 range_sensor={range_sensor}; LocalSLAM ~/downward_range → '
+            f'{downward_range_topic}'
+            + (f'; overlay={range_overlay_path})' if range_overlay_path else ''),
+        ]),
+    ]
 
     if use_globalslam:
         try:
@@ -370,5 +414,11 @@ def generate_launch_description():
             description=(
                 'Absolute path to experiment YAML (e.g. quad_params_no_velocity.yaml). '
                 'Empty = installed config/quad_params.yaml.')),
+        DeclareLaunchArgument(
+            'range_sensor',
+            default_value='sonar',
+            description=(
+                "B3: 'sonar' → /downward_range (ds0); "
+                "'tfa300l' → /laser_range (ds_tfa300l) + range gate overlay.")),
         OpaqueFunction(function=_build),
     ])

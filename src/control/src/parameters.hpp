@@ -63,9 +63,11 @@ struct parameters
     // Overlapping parameters for exploration
     double Explore_area_lambda_y;
     double Rec_Home_lambda_y;
-        
 
-
+    // CTRL-R4d: mission sequencer uses acknowledged unified trajectories.
+    // When true, pointa waits on /unified_trajectory settle (no go_point cmd_vel).
+    bool Unified_mission;
+    double Unified_traj_timeout_s;
 } ;   
 
 #endif /*PARAMETERS_H*/

@@ -175,6 +175,22 @@ Mavic2Pro {
       ]
       aperture .1
     }
+    DistanceSensor {
+      translation 0.0 0.0 0.0
+      rotation 0 1 0 1.5708
+      name "ds_tfa300l"
+      type "laser"
+      numberOfRays 1
+      lookupTable [
+        0.0 0.0 0
+        0.1 0.1 0.01
+        10.0 10.0 0.01
+        50.0 50.0 0.01
+        120.0 120.0 0.01
+        150.0 150.0 0.01
+      ]
+      aperture 0.005
+    }
   ]
   
 }

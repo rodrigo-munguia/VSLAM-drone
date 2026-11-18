@@ -3,6 +3,8 @@
 #include "range_frame_association.hpp"
 #include "camera_calibration.hpp"
 #include "pressure_altitude.hpp"
+#include "visual_profile.hpp"
+#include <chrono>
 
 #include "rclcpp/rclcpp.hpp"
 #include "localslam_types.hpp"
@@ -175,6 +177,7 @@ void EKFslam::apply_intrinsics_to_parameters(const camera_cal::Intrinsics & intr
 
 void EKFslam::handle_visual_image(const sensor_msgs::msg::Image & msg)
 {
+  ++diag_frames_callback_rx_;
   if (PAR.Calibration_source == "camera_info" && !visual_calibration_ready()) {
     std::lock_guard<std::mutex> lock(mutex_cal_);
     const int bound = std::max(1, PAR.Camera_info_waiting_image_bound);
@@ -238,6 +241,9 @@ void EKFslam::handle_visual_image(const sensor_msgs::msg::Image & msg)
   dat.frame.range_type = "";
 
   try {
+    using clock = std::chrono::steady_clock;
+    const bool prof = localslam::visual_profile::enabled();
+    const auto t_conv = clock::now();
     cv_bridge::CvImageConstPtr cv_ptr;
     if (msg.encoding == sensor_msgs::image_encodings::MONO8 ||
         msg.encoding == "8UC1")
@@ -247,6 +253,11 @@ void EKFslam::handle_visual_image(const sensor_msgs::msg::Image & msg)
       cv_ptr = cv_bridge::toCvCopy(msg, sensor_msgs::image_encodings::MONO8);
     }
     dat.frame.image = cv_ptr->image;
+    if (prof) {
+      localslam::visual_profile::write_convert_row(
+        localslam::visual_profile::ms_since(t_conv),
+        static_cast<int>(msg.width), static_cast<int>(msg.height));
+    }
   } catch (const cv_bridge::Exception & e) {
     RCLCPP_WARN(this->get_logger(), "Image conversion failed: %s", e.what());
     return;
@@ -455,11 +466,17 @@ void EKFslam::ManageBuffer(DATA &dat)
 
   for (int i = 0; i < static_cast<int>(DataBuffer.size()); i++) {
     if (DataBuffer[i].data_type == data_type) {
+      if (data_type == "frame") {
+        ++diag_frames_overwritten_;
+      }
       DataBuffer.erase(DataBuffer.begin() + i);
       i--;
     }
   }
   DataBuffer.push_back(dat);
+  if (data_type == "frame") {
+    ++diag_frames_enqueued_;
+  }
 }
 
 //----------------------------------------------------
@@ -509,7 +526,10 @@ DATA EKFslam::getData()
       dat = DataBuffer[i];
       DataBuffer.erase(DataBuffer.begin() + i);
 
-      if (note_downward_range(assoc, dat.range.range, dat.range.time)) {
+      if (note_downward_range(
+          assoc, dat.range.range, dat.range.time,
+          PAR.Range_assoc_min_m, PAR.Range_assoc_max_m))
+      {
         break;
       } else {
         dat.data_type = "null";
@@ -519,9 +539,11 @@ DATA EKFslam::getData()
     if (DataBuffer[i].data_type == "frame") {
       dat = DataBuffer[i];
       DataBuffer.erase(DataBuffer.begin() + i);
+      ++diag_frames_consumed_;
 
       dat.frame.range_type = associate_depth_to_frame(
-        assoc, dat.frame.range, dat.frame.time);
+        assoc, dat.frame.range, dat.frame.time,
+        PAR.Range_allow_altitude_fallback);
       break;
     }
   }

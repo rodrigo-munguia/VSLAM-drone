@@ -151,6 +151,25 @@ Mavic2Pro {
       ]
       aperture 0.1
     }
+    # B3: TFA300-L-inspired single-beam laser (preserves ds0). Same pose as
+    # Camera/ds0 so +X beam shares the validated cameraSlot orientation.
+    # type "laser": one ray, first-hit; aperture is red-spot radius [m], not FoV.
+    # Geometric sim only — no reflectivity / ambient-light model.
+    DistanceSensor {
+      rotation 0 1 0 1.5708
+      name "ds_tfa300l"
+      type "laser"
+      numberOfRays 1
+      lookupTable [
+        0.0 0.0 0
+        0.1 0.1 0.01
+        10.0 10.0 0.01
+        50.0 50.0 0.01
+        120.0 120.0 0.01
+        150.0 150.0 0.01
+      ]
+      aperture 0.005
+    }
     Camera {
       rotation 0 1 0 1.5708
       fieldOfView 1.57

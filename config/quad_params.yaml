@@ -53,22 +53,24 @@
     Odometry_expect_child_frame_id: base_link
     Ekf_enable_service: /EKFslam/enable
     # proportional gains for control
-    kp_x: 0.75  #0.5
-    kp_y: 0.75  #0.3
-    kp_z: 0.7
+    # CTRL-A2: linear body-frame P → velocity cmd; vmax is cruise speed [m/s]
+    kp_x: 0.50
+    kp_y: 0.50
+    kp_z: 1.6
     kp_yaw: 0.7
     # Maximum/minimun allowed control signals
-    maxControlSignal_xy: 0.75  #0.5
-    minControlSignal_xy: -0.75  #-0.5
-    maxControlSignal_z: 0.25
-    minControlSignal_z: -0.25
+    maxControlSignal_xy: 3.0
+    minControlSignal_xy: -3.0
+    maxControlSignal_z: 1.8
+    minControlSignal_z: -1.8
     maxControlSignal_yaw: 0.2
     minControlSignal_yaw: -0.2
     # control precision
-    cp_x: 0.2 # 0.1
-    cp_y: 0.2 # 0.1
-    cp_z: 0.25  # 0.5
-    cp_yaw: 0.047 # 0.087
+    # CTRL-S5a: tight terminal settle (was 4.0 / hunt-era relaxation)
+    cp_x: 1.5
+    cp_y: 1.5
+    cp_z: 1.0
+    cp_yaw: 0.15
     # Monocular camera intrinsic parameters
     Mono_cam_img_rows: 240
     Mono_cam_img_cols: 400
@@ -141,7 +143,15 @@
     Range_sensor_offset: 0.0 
     Range_sensor_max_range_pattern: 6.0
     Range_sensor_max_r_max: 1.75
-    Range_sensor_max_range_operation: 6.0       
+    Range_sensor_max_range_operation: 6.0
+    # B2: exclusive software gates (sonar defaults). Assoc: min < r < max.
+    # Init (undelayed_range): r > Range_init_min_m. Raising max alone does not
+    # validate high-altitude landmark init (sensor + scene still required).
+    Range_assoc_min_m: 0.4
+    Range_assoc_max_m: 6.0
+    Range_init_min_m: 0.5
+    # B4: default true preserves sonar altitude→FRAME.range fallback.
+    Range_allow_altitude_fallback: true
     # Prediction parameters
     Sigma_w: 0.1 
     # Sigma_a: 6.00     
@@ -190,7 +200,7 @@
     Images_max_innov_pixels: 50
     # For deleting feats and anchors
     Visual_delete_Maximun_number_feats_allowed: 100
-    Visual_delete_Maximun_number_anchors_allowed: 50
+    Visual_delete_Maximun_number_anchors_allowed: 0
     Visual_delete_minimun_feats_in_state_before_delete: 50    
     Visual_delete_minimun_RatioMatched: 0.3    
     # visual update parameters

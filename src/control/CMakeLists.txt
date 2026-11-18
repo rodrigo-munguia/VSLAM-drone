@@ -100,6 +100,16 @@ if(BUILD_TESTING)
     if(TARGET test_g6b_plan_interrupt)
       target_include_directories(test_g6b_plan_interrupt PRIVATE src)
     endif()
+
+    ament_add_gtest(test_xy_traj_ref test/test_xy_traj_ref.cpp)
+    if(TARGET test_xy_traj_ref)
+      target_include_directories(test_xy_traj_ref PRIVATE src)
+    endif()
+
+    ament_add_gtest(test_mission_enu test/test_mission_enu.cpp)
+    if(TARGET test_mission_enu)
+      target_include_directories(test_mission_enu PRIVATE src)
+    endif()
   endif()
 endif()
 

@@ -473,6 +473,82 @@ void Jac_e_init_feat_func(cv::Point2d uvd, arma::vec& x, CAM &camera_parameters,
 }
 
 //-----------------------------------------------------------------------------------------------------------
+void Jac_e_init_feat_wr_horizontal(
+  cv::Point2d uvd, arma::vec & x, CAM & camera_parameters, arma::mat & Rc2r,
+  arma::vec::fixed<3> & t_c2r, double range_eff,
+  arma::mat::fixed<3, 13> & dy_dx, arma::mat::fixed<3, 3> & dy_duvr)
+{
+  // p = p_C + λ m,  λ = r_eff * v_z / m_z,  m = hn/||hn||,  vn = Rc2n e_z
+  // return_Jac=true fills dhc_duvd (comment in vision.cpp is inverted vs code).
+  arma::vec::fixed<3> hc;
+  arma::mat::fixed<3, 2> dhc_duvd;
+  hc = Inverse_projection_model(uvd, 1, true, camera_parameters, dhc_duvd);
+
+  const double phi = x(1);
+  const double theta = x(2);
+  const double psi = x(3);
+  double Ra2b[9];
+  Euler_to_Ra2b_colum_major(phi, theta, psi, Ra2b);
+  arma::mat Rn2r(Ra2b, 3, 3);
+  arma::mat::fixed<3, 3> Rr2n = Rn2r.t();
+  arma::mat Rc2n = Rr2n * Rc2r;
+
+  arma::vec::fixed<3> hn = Rc2n * hc;
+  const double hn_norm = arma::norm(hn);
+  arma::vec::fixed<3> m = hn / hn_norm;
+
+  arma::vec::fixed<3> e_z_cam = {0.0, 0.0, 1.0};
+  arma::vec::fixed<3> vn = Rc2n * e_z_cam;
+  const double mz = m(2);
+  const double vz = vn(2);
+  const double lambda = range_eff * vz / mz;
+
+  const double hn1 = hn(0);
+  const double hn2 = hn(1);
+  const double hn3 = hn(2);
+  const double rhn = std::pow(hn1 * hn1 + hn2 * hn2 + hn3 * hn3, 1.5);
+  arma::rowvec::fixed<3> dnormhn_dhn = {-hn1 / rhn, -hn2 / rhn, -hn3 / rhn};
+  arma::mat::fixed<3, 3> dm_dhn = hn * dnormhn_dhn + arma::eye(3, 3) * (1.0 / hn_norm);
+
+  // hn = Rr2n * (Rc2r hc), vn = Rr2n * (Rc2r e_z). Use Jac_euler_2_rotMat_by_P
+  // (= ∂(Rr2n p)/∂e). The *_transpose_by_P helper matches ∂(Rn2r p)/∂e instead.
+  arma::vec::fixed<3> P_r = Rc2r * hc;
+  arma::mat::fixed<3, 3> dhn_de;
+  Jac_euler_2_rotMat_by_P(dhn_de, P_r, phi, theta, psi);
+
+  arma::vec::fixed<3> P_opt = Rc2r * e_z_cam;
+  arma::mat::fixed<3, 3> dvn_de;
+  Jac_euler_2_rotMat_by_P(dvn_de, P_opt, phi, theta, psi);
+
+  arma::mat::fixed<3, 3> dm_de = dm_dhn * dhn_de;
+
+  // dλ/de = r_eff * (mz * ∂vz/∂e - vz * ∂mz/∂e) / mz^2
+  const double inv_mz2 = 1.0 / (mz * mz);
+  arma::rowvec::fixed<3> dlambda_de =
+    range_eff * inv_mz2 * (mz * dvn_de.row(2) - vz * dm_de.row(2));
+
+  arma::mat::fixed<3, 3> dfp_tc_de;
+  Jac_euler_2_rotMat_by_P(dfp_tc_de, t_c2r, phi, theta, psi);
+
+  arma::mat::fixed<3, 3> dP_deuler = dfp_tc_de + m * dlambda_de + lambda * dm_de;
+
+  dy_dx.zeros();
+  dy_dx(arma::span(0, 2), arma::span(1, 3)) = dP_deuler;
+  dy_dx(arma::span(0, 2), arma::span(7, 9)) = arma::eye(3, 3);
+
+  arma::mat::fixed<3, 2> dhn_duv = Rc2n * dhc_duvd;
+  arma::mat::fixed<3, 2> dm_duv = dm_dhn * dhn_duv;
+  arma::rowvec::fixed<2> dlambda_duv =
+    (-range_eff * vz * inv_mz2) * dm_duv.row(2);
+  arma::mat::fixed<3, 2> dP_duv = m * dlambda_duv + lambda * dm_duv;
+
+  dy_duvr.zeros();
+  dy_duvr(arma::span(0, 2), arma::span(0, 1)) = dP_duv;
+  // ∂p/∂r = (vz/mz) m
+  dy_duvr(arma::span(0, 2), 2) = (vz / mz) * m;
+}
+
+//-----------------------------------------------------------------------------------------------------------
 
 void Jac_e_uv_XYZ(arma::vec::fixed<3> pxyz, arma::vec& x, CAM &camera_parameters, arma::mat &Rr2c,arma::vec::fixed<3> &t_c2r,arma::mat::fixed<2,13>& duv_dx, arma::mat::fixed<2,3>& duv_dy, bool Visual_update_attitude_update)
 {

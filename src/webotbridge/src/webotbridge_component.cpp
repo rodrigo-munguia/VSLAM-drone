@@ -14,6 +14,7 @@
 
 #include "webotbridge_component.hpp"
 #include "gt_frame_conversions.hpp"
+#include "rn2r_init.hpp"
 #include "rclcpp/rclcpp.hpp"
 #include <tf2/LinearMath/Quaternion.h>
 #include <tf2/LinearMath/Matrix3x3.h>
@@ -41,6 +42,8 @@ WEBOTb::WEBOTb(const rclcpp::NodeOptions & options)
     "camera", 10, std::bind(&WEBOTb::Camera_callback, this, _1));
   sub_Range_ = this->create_subscription<sensor_msgs::msg::Range>(
     "ds0", 10, std::bind(&WEBOTb::Range_callback, this, _1));
+  sub_LaserRange_ = this->create_subscription<sensor_msgs::msg::Range>(
+    "ds_tfa300l", 10, std::bind(&WEBOTb::LaserRange_callback, this, _1));
   sub_Gps_ = this->create_subscription<geometry_msgs::msg::PointStamped>(
     "webot_robot/gps", 10, std::bind(&WEBOTb::Gps_callback, this, _1));
   sub_GpsSpeed_ = this->create_subscription<geometry_msgs::msg::Vector3>(
@@ -89,16 +92,19 @@ WEBOTb::WEBOTb(const rclcpp::NodeOptions & options)
       "body_velocity", 10);
   pub_DownwardRange_std_ =
     create_publisher<sensor_msgs::msg::Range>("downward_range", 10);
+  pub_LaserRange_std_ =
+    create_publisher<sensor_msgs::msg::Range>("laser_range", 10);
   pub_Altitude_std_ =
     create_publisher<mavros_msgs::msg::Altitude>("altitude", 10);
 
   Range_available = false;
-  Rn2rG.eye();
+  // Must be eye(3,3): bare eye() on a default 0x0 mat stays 0x0 (CTRL-S3b).
+  init_rn2rg_identity(Rn2rG);
 
   RCLCPP_INFO(
     this->get_logger(),
     "WEBOTb publishing legacy topics and standard image/camera_info/imu_out/"
-    "body_velocity/downward_range/altitude (see launch remaps). "
+    "body_velocity/downward_range/laser_range/altitude (see launch remaps). "
     "CameraInfo %dx%d fc=(%.1f,%.1f) (Publish_camera_info=%d). "
     "mavros Altitude.relative = GPS-height emulation [m], +up; "
     "other altitude fields set to NaN (unavailable).",
@@ -380,6 +386,44 @@ void WEBOTb::Range_callback(const sensor_msgs::msg::Range & msg)
   pub_DownwardRange_std_->publish(range_out);
 }
 
+void WEBOTb::LaserRange_callback(const sensor_msgs::msg::Range & msg)
+{
+  // B3: TFA300-L-inspired path. Independent of sonar Range_callback —
+  // does not set Range_available / Frame.range latch (sonar-only legacy).
+  // Nonfinite: drop (no fabricate / no altitude substitute).
+  if (!std::isfinite(msg.range)) {
+    RCLCPP_DEBUG_THROTTLE(
+      this->get_logger(), *this->get_clock(), 5000,
+      "Dropping nonfinite ds_tfa300l range");
+    return;
+  }
+
+  constexpr double kLaserMinM = 0.1;
+  constexpr double kLaserMaxM = 150.0;
+  constexpr float kLaserFovRad = 0.00872665f;  // 0.5 deg
+
+  // Out of simulated envelope: do not publish a clamped fake distance.
+  if (msg.range < kLaserMinM || msg.range > kLaserMaxM) {
+    RCLCPP_DEBUG_THROTTLE(
+      this->get_logger(), *this->get_clock(), 5000,
+      "Dropping ds_tfa300l range %.3f outside [%.1f, %.1f] m",
+      msg.range, kLaserMinM, kLaserMaxM);
+    return;
+  }
+
+  auto stamp = stamp_from_msg_or_now(msg.header);
+  sensor_msgs::msg::Range range_out = msg;
+  range_out.header.stamp = stamp;
+  if (range_out.header.frame_id.empty()) {
+    range_out.header.frame_id = "tfa300l_link";
+  }
+  range_out.radiation_type = sensor_msgs::msg::Range::INFRARED;
+  range_out.field_of_view = kLaserFovRad;
+  range_out.min_range = static_cast<float>(kLaserMinM);
+  range_out.max_range = static_cast<float>(kLaserMaxM);
+  pub_LaserRange_std_->publish(range_out);
+}
+
 void WEBOTb::invalidate_gt_epoch(const std::string & reason)
 {
   gt::clear_reference(gt_ref_);
@@ -610,6 +654,10 @@ void WEBOTb::GpsSpeed_callback(const geometry_msgs::msg::Vector3 & msg)
     static_cast<int32_t>(stamp.sec) * 1000 + static_cast<int32_t>(stamp.nanosec / 1000000);
 
   arma::vec sp_N = {msg.x, msg.y, msg.z};
+  // Precondition: ctor sets 3×3 identity; IMU replaces with live Rn2r.
+  if (!rn2rg_is_3x3(Rn2rG)) {
+    init_rn2rg_identity(Rn2rG);
+  }
   arma::vec sp_R = Rn2rG * sp_N;
 
   // Shared noise samples: ROS body = sp_R; legacy Spd applies y/z flips.

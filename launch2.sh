@@ -43,8 +43,20 @@ SLAM_FEEDBACK=""
 SLAM_FEEDBACK_IFACE=""
 PARAMS_FILE=""
 CONTROL_PLAN=""
+RANGE_SENSOR="sonar"
 NO_WEBOTS="false"
 NO_KEYBOARD="false"
+# Default false: operator starts the plan with 'a' in EKF-Operator.
+# Pass --auto-start-plan true to start without the keyboard.
+AUTO_START_PLAN="false"
+# R5/R5a: optional trajectory / tracker overrides (defaults = validated R4e).
+TRAJ_V_MAX=""
+TRAJ_V_MAX_XY=""
+TRAJ_V_MAX_Z=""
+TRAJ_A_MAX=""
+TRAJ_J_MAX=""
+TRACKER_V_MAX_XY=""
+TRACKER_V_MAX_Z=""
 
 usage() {
   cat <<EOF
@@ -79,9 +91,24 @@ Usage: ./launch2.sh [options]
                              Omitted = YAML.
   --params-file PATH         Absolute YAML for bringup (default: installed quad_params.yaml)
   --control-plan PATH        Absolute path override for Control_plan_path
+  --auto-start-plan true|false
+                             Call /control_run_service after bringup (same as
+                             operator key 'a'). Default: false — use EKF-Operator.
+  --range-sensor sonar|tfa300l
+                             Range source for LocalSLAM ~/downward_range
+                             (default: sonar). tfa300l selects /laser_range
+                             and merges config/range_sensor_tfa300l.yaml
+                             gates only (does not change Speed_update/Σ_a/uv).
   --no-plot2                 Compatibility alias for --viewer none
   --no-webots                Do not spawn Webots (app+keyboard only)
   --no-keyboard              Do not spawn operator terminal
+  --traj-v-max M/S           Legacy isotropic traj vmax (default 3.0; prefer xy/z)
+  --traj-v-max-xy M/S        Traj XY vmax (production default 3.0; ≤0 → inherit)
+  --traj-v-max-z M/S         Traj Z vmax (production default 1.5; ≤0 → inherit)
+  --traj-a-max M/S2          Trajectory amax (default 0.8)
+  --traj-j-max M/S3          Trajectory jmax (default 2.0)
+  --tracker-v-max-xy M/S     Tracker XY v_sp sat (production default 3.5)
+  --tracker-v-max-z M/S      Tracker Z v_sp sat (default 1.5)
   -h, --help                 Show this help
 
 Environment:
@@ -119,6 +146,26 @@ while [[ $# -gt 0 ]]; do
     --slam-feedback-interface) SLAM_FEEDBACK_IFACE="$2"; shift 2 ;;
     --params-file) PARAMS_FILE="$2"; shift 2 ;;
     --control-plan) CONTROL_PLAN="$2"; shift 2 ;;
+    --traj-v-max) TRAJ_V_MAX="$2"; shift 2 ;;
+    --traj-v-max-xy) TRAJ_V_MAX_XY="$2"; shift 2 ;;
+    --traj-v-max-z) TRAJ_V_MAX_Z="$2"; shift 2 ;;
+    --traj-a-max) TRAJ_A_MAX="$2"; shift 2 ;;
+    --traj-j-max) TRAJ_J_MAX="$2"; shift 2 ;;
+    --tracker-v-max-xy) TRACKER_V_MAX_XY="$2"; shift 2 ;;
+    --tracker-v-max-z) TRACKER_V_MAX_Z="$2"; shift 2 ;;
+    --range-sensor) RANGE_SENSOR="$2"; shift 2 ;;
+    --auto-start-plan)
+      if [[ $# -lt 2 ]]; then
+        echo "error: --auto-start-plan requires true|false" >&2
+        exit 1
+      fi
+      AUTO_START_PLAN="$2"
+      shift 2
+      ;;
+    --auto-start-plan=*)
+      AUTO_START_PLAN="${1#--auto-start-plan=}"
+      shift
+      ;;
     --no-plot2) VIEWER="none"; shift ;;
     --no-webots) NO_WEBOTS="true"; shift ;;
     --no-keyboard) NO_KEYBOARD="true"; shift ;;
@@ -126,6 +173,19 @@ while [[ $# -gt 0 ]]; do
     *) echo "Unknown option: $1"; usage; exit 1 ;;
   esac
 done
+
+if ! AUTO_START_PLAN="$(normalize_bool "$AUTO_START_PLAN")"; then
+  echo "error: --auto-start-plan must be true|false (got: $AUTO_START_PLAN)"
+  exit 1
+fi
+
+case "$RANGE_SENSOR" in
+  sonar|tfa300l) ;;
+  *)
+    echo "error: --range-sensor must be sonar|tfa300l (got: $RANGE_SENSOR)"
+    exit 1
+    ;;
+esac
 
 if ! GLOBALSLAM="$(normalize_bool "$GLOBALSLAM")"; then
   echo "error: --globalslam must be true|false (got: $GLOBALSLAM)"
@@ -405,7 +465,23 @@ cleanup() {
 trap cleanup EXIT INT TERM
 
 if [[ "$NO_WEBOTS" != "true" ]]; then
-  open_term "EKF-Webots" "$SETUP_CMD; ros2 launch webot_package robot_launch.py world:=$WORLD"
+  WEBOTS_LAUNCH_ARGS=("world:=$WORLD")
+  [[ -n "$TRAJ_V_MAX" ]] && WEBOTS_LAUNCH_ARGS+=("traj_v_max:=$TRAJ_V_MAX")
+  [[ -n "$TRAJ_V_MAX_XY" ]] && WEBOTS_LAUNCH_ARGS+=("traj_v_max_xy:=$TRAJ_V_MAX_XY")
+  [[ -n "$TRAJ_V_MAX_Z" ]] && WEBOTS_LAUNCH_ARGS+=("traj_v_max_z:=$TRAJ_V_MAX_Z")
+  [[ -n "$TRAJ_A_MAX" ]] && WEBOTS_LAUNCH_ARGS+=("traj_a_max:=$TRAJ_A_MAX")
+  [[ -n "$TRAJ_J_MAX" ]] && WEBOTS_LAUNCH_ARGS+=("traj_j_max:=$TRAJ_J_MAX")
+  [[ -n "$TRACKER_V_MAX_XY" ]] && WEBOTS_LAUNCH_ARGS+=("tracker_v_max_xy:=$TRACKER_V_MAX_XY")
+  [[ -n "$TRACKER_V_MAX_Z" ]] && WEBOTS_LAUNCH_ARGS+=("tracker_v_max_z:=$TRACKER_V_MAX_Z")
+  # Export for any nested tooling; robot_launch also mirrors into controller env.
+  [[ -n "$TRAJ_V_MAX" ]] && export WEBOT_TRAJ_V_MAX="$TRAJ_V_MAX"
+  [[ -n "$TRAJ_V_MAX_XY" ]] && export WEBOT_TRAJ_V_MAX_XY="$TRAJ_V_MAX_XY"
+  [[ -n "$TRAJ_V_MAX_Z" ]] && export WEBOT_TRAJ_V_MAX_Z="$TRAJ_V_MAX_Z"
+  [[ -n "$TRAJ_A_MAX" ]] && export WEBOT_TRAJ_A_MAX="$TRAJ_A_MAX"
+  [[ -n "$TRAJ_J_MAX" ]] && export WEBOT_TRAJ_J_MAX="$TRAJ_J_MAX"
+  [[ -n "$TRACKER_V_MAX_XY" ]] && export WEBOT_TRACKER_V_MAX_XY="$TRACKER_V_MAX_XY"
+  [[ -n "$TRACKER_V_MAX_Z" ]] && export WEBOT_TRACKER_V_MAX_Z="$TRACKER_V_MAX_Z"
+  open_term "EKF-Webots" "$SETUP_CMD; ros2 launch webot_package robot_launch.py ${WEBOTS_LAUNCH_ARGS[*]}"
   sleep 2
 fi
 
@@ -424,10 +500,11 @@ fi
 LAUNCH_ARGS=(
   use_plot2:="$USE_PLOT2"
   use_globalslam:="$GLOBALSLAM"
+  range_sensor:="$RANGE_SENSOR"
 )
+echo "range_sensor=$RANGE_SENSOR"
 # Omit empty overrides so ROS launch keeps YAML (CLI > YAML > node default).
-[[ -n "$GLOBAL_CORRECTIONS" ]] && LAUNCH_ARGS+=(global_corrections:="$GLOBAL_CORRECTIONS")
-[[ -n "$ENABLE_GLOBAL_BA" ]] && LAUNCH_ARGS+=(enable_global_ba:="$ENABLE_GLOBAL_BA")
+[[ -n "$GLOBAL_CORRECTIONS" ]] && LAUNCH_ARGS+=(global_corrections:="$GLOBAL_CORRECTIONS")[[ -n "$ENABLE_GLOBAL_BA" ]] && LAUNCH_ARGS+=(enable_global_ba:="$ENABLE_GLOBAL_BA")
 [[ -n "$ENABLE_TAG_LOOP" ]] && LAUNCH_ARGS+=(enable_tag_loop_closure:="$ENABLE_TAG_LOOP")
 [[ -n "$ENABLE_VISUAL_LOOP" ]] && LAUNCH_ARGS+=(enable_visual_loop_closure:="$ENABLE_VISUAL_LOOP")
 [[ -n "$APPLY_BA_CORR" ]] && LAUNCH_ARGS+=(apply_ba_corrections:="$APPLY_BA_CORR")
@@ -476,6 +553,29 @@ if [[ "$GLOBALSLAM" == "true" ]]; then
   fi
 else
   echo "Global SLAM: OFF (local-only default)"
+fi
+
+if [[ "$AUTO_START_PLAN" == "true" ]]; then
+  echo "auto-start-plan=true (will call /control_run_service when ready; no manual 'a')"
+  (
+    # Wait for control service, then start the plan once.
+    # Use cmd 104 == 'h' (start/resume), NOT 114 == 'r' (toggle): a duplicate
+    # call must not stop the plan if a stale auto-start races the new one.
+    for _i in $(seq 1 90); do
+      if ros2 service list 2>/dev/null | grep -q '^/control_run_service$'; then
+        sleep 3
+        echo "auto-start-plan: requesting Run control plan..."
+        ros2 service call /control_run_service interfaces/srv/SimpleServ "{cmd: 104}" \
+          || echo "auto-start-plan: service call failed" >&2
+        exit 0
+      fi
+      sleep 1
+    done
+    echo "auto-start-plan: timed out waiting for /control_run_service" >&2
+  ) &
+  PIDS+=("$!")
+else
+  echo "auto-start-plan=false (press 'a' in the operator terminal to run the plan)"
 fi
 
 echo "Starting application container (status in this terminal)..."

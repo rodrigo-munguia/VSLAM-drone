@@ -1,0 +1,14 @@
+earth_aerial_texture.jpg — ENV-A2 ground texture
+Type: REAL USGS NAIP aerial orthophotography (public domain).
+Source service: USGS The National Map — USGSNAIPImagery ImageServer
+URL: https://imagery.nationalmap.gov/arcgis/rest/services/USGSNAIPImagery/ImageServer/exportImage?bbox=-93.623,42.027750000000005,-93.617,42.03225&bboxSR=4326&imageSR=4326&size=2048,2048&format=jpg&f=image
+Geographic bbox (EPSG:4326): -93.623,42.027750000000005,-93.617,42.03225
+  center lon/lat ≈ (-93.62, 42.03) near Ames, Iowa, USA
+  approx extent ≈ 500 m × 500 m
+Export: 2048×2048 JPEG via exportImage
+Original NAIP GSD: typically 0.6–1.0 m (export resampled to ~0.24 m/px for Webots mapping)
+License: U.S. Government work / public domain (USGS NAIP distribution)
+  https://www.usa.gov/publicdomain/label/1.0/
+  https://www.usgs.gov/centers/eros/science/usgs-eros-archive-aerial-photography-national-agriculture-imagery-program-naip
+Transformations: crop/export to 2048² only; no artificial upscaling claim beyond source GSD.
+Runtime: local file only (no live tile server).

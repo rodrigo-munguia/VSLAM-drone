@@ -95,21 +95,26 @@ Override the install prefix with `EKF_INSTALL_BASE` if needed (default for
 
 Two quadrotor LocalSLAM profiles:
 
-| Launcher | Default YAML | LocalSLAM mode |
-|---|---|---|
-| `./launch2.sh` | `config/quad_params.yaml` | **Velocity-aided** (`Speed_update: true`, `min_vel: 0.1`, `Sigma_a: 6`, `Sigma_cam_uv: 10`) |
-| `./launch3.sh` | `config/quad_params_no_velocity.yaml` | **Velocity-free optimized** (`Speed_update: false`, `min_vel: -1`, `Sigma_a: 4`, `Sigma_cam_uv: 10`) |
+| Launcher | Default YAML | Range | LocalSLAM mode |
+|---|---|---|---|
+| `./launch2.sh` | `config/quad_params.yaml` | Sonar | **Velocity-aided** (`Speed_update: true`, `min_vel: 0.1`, `Sigma_a: 6`, `Sigma_cam_uv: 10`) |
+| `./launch3.sh` | `config/quad_params_no_velocity.yaml` | Sonar | **Velocity-free optimized** (`Speed_update: false`, `min_vel: -1`, `Sigma_a: 4`, `Sigma_cam_uv: 10`) |
+| `./launch4.sh` | `config/quad_params_no_velocity_tfa300l.yaml` | TFA300-L | **Laser + velocity-free** (T2 velocity keys + laser gates/confidence; altitude→depth fallback off) |
 
-`launch3.sh` reuses `launch2.sh` and only changes the default `--params-file`. An explicit `--params-file` on either launcher overrides the default. Velocity-aided production tuning is unchanged. Evidence: [`docs/evidence/lslam_nov_vel_t2/`](docs/evidence/lslam_nov_vel_t2/).
+`launch3.sh` / `launch4.sh` reuse `launch2.sh`. Explicit `--params-file` / `--range-sensor` override defaults. Velocity-aided production tuning is unchanged. Evidence: [`docs/evidence/lslam_nov_vel_t2/`](docs/evidence/lslam_nov_vel_t2/), [`docs/evidence/lslam_range_b4/`](docs/evidence/lslam_range_b4/).
 
 ```bash
 source /opt/ros/jazzy/setup.bash
 source install/setup.bash
-./launch2.sh                         # velocity-aided baseline
-./launch3.sh                         # optimized velocity-free LocalSLAM
+./launch2.sh                         # velocity-aided baseline (sonar range)
+./launch3.sh                         # optimized velocity-free LocalSLAM (sonar)
+./launch4.sh                         # velocity-free + TFA300-L laser (B4 profile)
+./launch4.sh --world earth_aerial.wbt  # B4 laser profile in ENV-A1 Earth-like world
+./launch2.sh --range-sensor tfa300l  # velocity-aided + TFA300-L laser
+./launch3.sh --range-sensor tfa300l  # velocity-free + TFA300-L laser (gates overlay only)
 ./launch3.sh --globalslam false --viewer plot2
 ./launch2.sh --params-file "$PWD/config/quad_params_no_velocity.yaml"  # same as launch3 default
-# equivalents / options (apply to launch2 or launch3):
+# equivalents / options (apply to launch2, launch3, or launch4):
 ./launch2.sh --viewer plot2
 ./launch2.sh --viewer rviz2
 ./launch2.sh --viewer none
@@ -168,6 +173,25 @@ Installed copies live under
 `install/ekf_monoslam_bringup/share/ekf_monoslam_bringup/`. After editing
 `config/` or `control_plan.txt`, **rebuild/reinstall `ekf_monoslam_bringup`**
 so the share tree updates (do not maintain a second conflicting copy by hand).
+
+### LocalSLAM range acceptance (B2–B4) and sensor selection
+
+Under `/lslam` (metres; exclusive bounds; sonar defaults unless noted):
+
+| Parameter | Sonar default | Laser (`launch4`) | Semantics |
+|---|---:|---:|---|
+| `Range_assoc_min_m` | 0.4 | 0.1 | Accept range iff `min < r < max` |
+| `Range_assoc_max_m` | 6.0 | 150.0 | Upper exclusive association limit |
+| `Range_init_min_m` | 0.5 | 0.5 | `undelayed_range` init iff `r > Range_init_min_m` |
+| `Range_allow_altitude_fallback` | true | false | Altitude→`FRAME.range` for init only |
+| `Range_sensor_max_*` / `Sigma_cam_initial_depth_*` | sonar beam model | provisional confidence aperture | σ class only — not feature eligibility |
+
+`--range-sensor sonar` remaps `~/downward_range` → `/downward_range` (`ds0`).
+`--range-sensor tfa300l` remaps to `/laser_range` and merges gate overlay
+[`config/range_sensor_tfa300l.yaml`](config/range_sensor_tfa300l.yaml)
+without changing velocity/`Sigma_a`/`Sigma_cam_uv`. Full laser confidence +
+fallback-off profile: [`config/quad_params_no_velocity_tfa300l.yaml`](config/quad_params_no_velocity_tfa300l.yaml)
+via `./launch4.sh`. See [`docs/evidence/lslam_range_b4/`](docs/evidence/lslam_range_b4/).
 
 ## Standalone Local SLAM
 

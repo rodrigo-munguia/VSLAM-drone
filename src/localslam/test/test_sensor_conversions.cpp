@@ -15,11 +15,20 @@
 using localslam::EKFRunControl;
 using localslam::SensorInputPlan;
 using localslam::associate_depth_to_frame;
+using localslam::feature_in_range_confidence_region;
+using localslam::initial_depth_sigma_m;
 using localslam::kAltFallbackDtMs;
+using localslam::kFirstLandmarkDepthSigmaScale;
+using localslam::kRangeGateMaxM;
+using localslam::kRangeGateMinM;
+using localslam::kRangeInitMinM;
 using localslam::make_sensor_input_plan;
 using localslam::note_altitude_for_fallback;
 using localslam::note_downward_range;
+using localslam::range_passes_assoc_gate;
+using localslam::range_permits_undelayed_init;
 using localslam::validate_altitude_input_mode;
+using localslam::validate_range_acceptance_params;
 using localslam::conversions::body_twist_to_internal_spd;
 using localslam::conversions::imu_orientation_unavailable;
 using localslam::conversions::imu_to_internal_att;
@@ -316,6 +325,96 @@ TEST(RangeAssoc, InvalidRangeRejectedByGate)
   EXPECT_FALSE(s.range_available);
 }
 
+// ---------------------------------------------------------------------------
+// B2: configurable association / undelayed-init gates
+// ---------------------------------------------------------------------------
+TEST(RangeAssoc, SonarDefaultExclusiveBounds)
+{
+  EXPECT_FALSE(range_passes_assoc_gate(0.4, kRangeGateMinM, kRangeGateMaxM));
+  EXPECT_TRUE(range_passes_assoc_gate(0.4000001, kRangeGateMinM, kRangeGateMaxM));
+  EXPECT_TRUE(range_passes_assoc_gate(1.0, kRangeGateMinM, kRangeGateMaxM));
+  EXPECT_TRUE(range_passes_assoc_gate(5.999, kRangeGateMinM, kRangeGateMaxM));
+  EXPECT_FALSE(range_passes_assoc_gate(6.0, kRangeGateMinM, kRangeGateMaxM));
+
+  localslam::RangeFrameAssociationState s;
+  EXPECT_FALSE(note_downward_range(s, 0.4, 1));
+  EXPECT_FALSE(note_downward_range(s, 6.0, 2));
+  EXPECT_TRUE(note_downward_range(s, 1.5, 3));
+  EXPECT_TRUE(s.range_available);
+  EXPECT_DOUBLE_EQ(s.last_range, 1.5);
+}
+
+TEST(RangeAssoc, CustomLongRangeBoundsAcceptAboveSix)
+{
+  constexpr double lo = 0.1;
+  constexpr double hi = 150.0;
+  EXPECT_FALSE(range_passes_assoc_gate(0.1, lo, hi));
+  EXPECT_TRUE(range_passes_assoc_gate(0.11, lo, hi));
+  EXPECT_TRUE(range_passes_assoc_gate(50.0, lo, hi));
+  EXPECT_TRUE(range_passes_assoc_gate(149.9, lo, hi));
+  EXPECT_FALSE(range_passes_assoc_gate(150.0, lo, hi));
+
+  localslam::RangeFrameAssociationState s;
+  EXPECT_FALSE(note_downward_range(s, 10.0, 10));  // default sonar gate
+  EXPECT_TRUE(note_downward_range(s, 10.0, 11, lo, hi));
+  EXPECT_DOUBLE_EQ(s.last_range, 10.0);
+}
+
+TEST(RangeAssoc, UndelayedInitThresholdExclusive)
+{
+  EXPECT_FALSE(range_permits_undelayed_init(0.5, kRangeInitMinM));
+  EXPECT_TRUE(range_permits_undelayed_init(0.5000001, kRangeInitMinM));
+  // Assoc can accept (0.4, 0.5] but undelayed init still refuses at == 0.5
+  EXPECT_TRUE(range_passes_assoc_gate(0.45, kRangeGateMinM, kRangeGateMaxM));
+  EXPECT_FALSE(range_permits_undelayed_init(0.45, kRangeInitMinM));
+}
+
+TEST(RangeAssoc, NonFiniteNeverPassesAssocGate)
+{
+  EXPECT_FALSE(range_passes_assoc_gate(
+    std::numeric_limits<double>::quiet_NaN(), kRangeGateMinM, kRangeGateMaxM));
+  EXPECT_FALSE(range_passes_assoc_gate(
+    std::numeric_limits<double>::infinity(), kRangeGateMinM, kRangeGateMaxM));
+  localslam::RangeFrameAssociationState s;
+  EXPECT_FALSE(note_downward_range(
+    s, std::numeric_limits<double>::quiet_NaN(), 1));
+  EXPECT_FALSE(s.range_available);
+}
+
+TEST(RangeAssoc, ValidateRangeAcceptanceParams)
+{
+  EXPECT_NO_THROW(validate_range_acceptance_params(0.4, 6.0, 0.5));
+  EXPECT_NO_THROW(validate_range_acceptance_params(0.1, 150.0, 0.5));
+  // init may be <= assoc_min (intersection decides eligibility)
+  EXPECT_NO_THROW(validate_range_acceptance_params(0.4, 6.0, 0.2));
+  EXPECT_THROW(validate_range_acceptance_params(-0.1, 6.0, 0.5), std::runtime_error);
+  EXPECT_THROW(validate_range_acceptance_params(0.4, 0.4, 0.2), std::runtime_error);
+  EXPECT_THROW(validate_range_acceptance_params(0.4, 6.0, 6.0), std::runtime_error);
+  EXPECT_THROW(validate_range_acceptance_params(0.4, 6.0, -1.0), std::runtime_error);
+  EXPECT_THROW(
+    validate_range_acceptance_params(
+      std::numeric_limits<double>::quiet_NaN(), 6.0, 0.5),
+    std::runtime_error);
+}
+
+TEST(RangeAssoc, MissingRangeKeepsFrameUnsetAndConsumeOnce)
+{
+  localslam::RangeFrameAssociationState s;
+  double fr = -1.0;
+  EXPECT_EQ(associate_depth_to_frame(s, fr, 100), "");
+  EXPECT_DOUBLE_EQ(fr, -1.0);
+  EXPECT_FALSE(range_permits_undelayed_init(fr, kRangeInitMinM));
+
+  ASSERT_TRUE(note_downward_range(s, 2.0, 200));
+  fr = -1.0;
+  EXPECT_EQ(associate_depth_to_frame(s, fr, 210), "sonar");
+  EXPECT_DOUBLE_EQ(fr, 2.0);
+  EXPECT_FALSE(s.range_available);
+  double fr2 = -1.0;
+  EXPECT_EQ(associate_depth_to_frame(s, fr2, 220), "");
+  EXPECT_DOUBLE_EQ(fr2, -1.0);
+}
+
 TEST(RangeAssoc, HeaderlessNodeTimeIsMeaningfulDt)
 {
   // Simulates headerless GPS-speed / now() stamping: times are nonzero and
@@ -348,6 +447,67 @@ TEST(Timestamp, StampToMsZeroVsNonzero)
   //   → (dt > 100) false → altitude-as-depth fallback never/rarely fires.
   // A1 stores stamp_to_ms(header.stamp) (or bridge now() for headerless) →
   //   nonzero dt can exceed 100 ms and activate the fallback.
+}
+
+// ---------------------------------------------------------------------------
+// B4: altitude→FRAME.range fallback flag + confidence σ classification
+// ---------------------------------------------------------------------------
+TEST(RangeAssoc, DefaultTruePreservesAltOverwrite)
+{
+  localslam::RangeFrameAssociationState s;
+  ASSERT_TRUE(note_downward_range(s, 1.2, 1000));
+  note_altitude_for_fallback(s, 3.0);
+  double fr = -1.0;
+  std::string t = associate_depth_to_frame(
+    s, fr, 1000 + kAltFallbackDtMs + 1, /*allow_altitude_fallback=*/true);
+  EXPECT_EQ(t, "alt");
+  EXPECT_DOUBLE_EQ(fr, 3.0);
+}
+
+TEST(RangeAssoc, FallbackDisabledKeepsLaserAndClearsAltLatch)
+{
+  localslam::RangeFrameAssociationState s;
+  ASSERT_TRUE(note_downward_range(s, 8.5, 1000, 0.1, 150.0));
+  note_altitude_for_fallback(s, 12.0);
+  double fr = -1.0;
+  // Would overwrite under legacy true; false must keep laser and clear latch.
+  std::string t = associate_depth_to_frame(
+    s, fr, 1000 + kAltFallbackDtMs + 1, /*allow_altitude_fallback=*/false);
+  EXPECT_EQ(t, "sonar");
+  EXPECT_DOUBLE_EQ(fr, 8.5);
+  EXPECT_FALSE(s.range_available_alt);
+}
+
+TEST(RangeAssoc, FallbackDisabledLeavesFrameUnsetWithoutRange)
+{
+  localslam::RangeFrameAssociationState s;
+  note_altitude_for_fallback(s, 9.0);
+  double fr = -1.0;
+  std::string t = associate_depth_to_frame(
+    s, fr, 500 + kAltFallbackDtMs + 1, false);
+  EXPECT_EQ(t, "");
+  EXPECT_DOUBLE_EQ(fr, -1.0);
+  EXPECT_FALSE(s.range_available_alt);
+  EXPECT_FALSE(range_permits_undelayed_init(fr, kRangeInitMinM));
+}
+
+TEST(RangeConfidence, InVsOutRegionAndFirstLandmarkScale)
+{
+  // Production: only σ_ini changes; eligibility is independent.
+  EXPECT_TRUE(feature_in_range_confidence_region(10.0, 40.0, 8.0, 120.0));
+  EXPECT_FALSE(feature_in_range_confidence_region(50.0, 40.0, 8.0, 120.0));
+  EXPECT_FALSE(feature_in_range_confidence_region(10.0, 40.0, 120.0, 120.0));
+
+  EXPECT_DOUBLE_EQ(
+    initial_depth_sigma_m(true, true, 1.0, 5.0), 1.0);
+  EXPECT_DOUBLE_EQ(
+    initial_depth_sigma_m(false, true, 1.0, 5.0), 5.0);
+  EXPECT_DOUBLE_EQ(
+    initial_depth_sigma_m(true, false, 1.0, 5.0),
+    1.0 * kFirstLandmarkDepthSigmaScale);
+  EXPECT_DOUBLE_EQ(
+    initial_depth_sigma_m(false, false, 1.0, 5.0),
+    5.0 * kFirstLandmarkDepthSigmaScale);
 }
 
 int main(int argc, char ** argv)

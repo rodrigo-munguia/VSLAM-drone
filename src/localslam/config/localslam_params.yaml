@@ -53,6 +53,10 @@
     Range_sensor_max_range_pattern: 6.0
     Range_sensor_max_r_max: 1.75
     Range_sensor_max_range_operation: 6.0
+    Range_assoc_min_m: 0.4
+    Range_assoc_max_m: 6.0
+    Range_init_min_m: 0.5
+    Range_allow_altitude_fallback: true
     Sigma_w: 0.1
     Sigma_a: 6.0
     Tau_r: 1.0

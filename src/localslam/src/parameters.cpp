@@ -47,6 +47,10 @@ void EKFslam::setParameters()
    this->declare_parameter<double>("Range_sensor_max_range_pattern",6.0);
    this->declare_parameter<double>("Range_sensor_max_r_max",1.75);
    this->declare_parameter<double>("Range_sensor_max_range_operation",6.0);
+   this->declare_parameter<double>("Range_assoc_min_m",0.4);
+   this->declare_parameter<double>("Range_assoc_max_m",6.0);
+   this->declare_parameter<double>("Range_init_min_m",0.5);
+   this->declare_parameter<bool>("Range_allow_altitude_fallback",true);
    this->declare_parameter<double>("Sigma_w",0.001);   
    this->declare_parameter<double>("Sigma_a",1.0);
    this->declare_parameter<double>("Tau_r",1.0);
@@ -163,6 +167,10 @@ void EKFslam::setParameters()
    this->get_parameter("Range_sensor_max_range_pattern",PAR.Range_sensor_max_range_pattern);
    this->get_parameter("Range_sensor_max_r_max",PAR.Range_sensor_max_r_max);
    this->get_parameter("Range_sensor_max_range_operation",PAR.Range_sensor_max_range_operation);
+   this->get_parameter("Range_assoc_min_m",PAR.Range_assoc_min_m);
+   this->get_parameter("Range_assoc_max_m",PAR.Range_assoc_max_m);
+   this->get_parameter("Range_init_min_m",PAR.Range_init_min_m);
+   this->get_parameter("Range_allow_altitude_fallback",PAR.Range_allow_altitude_fallback);
    this->get_parameter("Sigma_w",PAR.Sigma_w);   
    this->get_parameter("Sigma_a",PAR.Sigma_a);
    this->get_parameter("Tau_r",PAR.Tau_r);

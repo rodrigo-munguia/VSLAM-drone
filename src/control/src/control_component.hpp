@@ -20,7 +20,9 @@
 #include "std_msgs/msg/string.hpp"
 
 #include "interfaces/srv/simple_serv.hpp"
+#include "interfaces/srv/unified_trajectory.hpp"
 #include "interfaces/srv/correction_coordinate.hpp"
+#include "interfaces/msg/unified_trajectory_status.hpp"
 #include "g6_coord_policy.hpp"
 #include "g6_feedback_barrier.hpp"
 #include <atomic>
@@ -142,8 +144,10 @@ namespace control
       rclcpp::Client<interfaces::srv::SimpleServ>::SharedPtr client_gslam_run_;
       rclcpp::Client<interfaces::srv::SimpleServ>::SharedPtr client_webot_run_;
       rclcpp::Client<interfaces::srv::SimpleServ>::SharedPtr client_plot_;
-    
-      
+      rclcpp::Client<interfaces::srv::UnifiedTrajectory>::SharedPtr
+        client_unified_traj_;
+      rclcpp::Subscription<interfaces::msg::UnifiedTrajectoryStatus>::SharedPtr
+        sub_unified_traj_status_;
 
     //------   
     void setParameters();
@@ -165,6 +169,11 @@ namespace control
     bool execute_cmd();
 
     bool go_point(ROBOT_STATE &r_d);
+    /** R4d: request acknowledged unified traj and wait for matching settle. */
+    bool go_point_unified(ROBOT_STATE &r_d);
+    void UnifiedTrajStatus_callback(
+      const interfaces::msg::UnifiedTrajectoryStatus & msg);
+    bool cancel_unified_trajectory();
     bool go_point_using_visual_mark(ROBOT_STATE &r_d);
     double compute_ys(double lambda_y);
     bool recognize_home();
@@ -224,6 +233,20 @@ namespace control
     LoggerGoPoint *logger_vp; // for loggind go-point command data
 
     arma::mat Rn2rG;
+
+    // CTRL-R2: continuous acceleration-limited XY velocity reference (body).
+    double v_ref_x_{0.0};
+    double v_ref_y_{0.0};
+
+    // CTRL-R4d: absolute GPS ENU spawn (raw, no Y negation) for mission→driver.
+    bool gps_spawn_valid_{false};
+    double gps_spawn_x_{0.0};
+    double gps_spawn_y_{0.0};
+    double gps_spawn_z_{0.0};
+    uint32_t unified_traj_req_seq_{0};
+    std::mutex mutex_traj_status_;
+    interfaces::msg::UnifiedTrajectoryStatus traj_status_{};
+    bool traj_status_fresh_{false};
   };
 
 }  // namespace composition

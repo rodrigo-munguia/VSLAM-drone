@@ -1,5 +1,7 @@
 #include "ekf.hpp"
+#include "visual_profile.hpp"
 #include "../../common/anms/anms.h"
+#include <chrono>
 
 
 
@@ -49,6 +51,9 @@ arma::vec::fixed<3> EKF::Triangulate_sigle_3d_point(cv::Point2f &uv1d,cv::Point2
 //--------------------------------------------------------------------------------------
 void EKF::Get_img_points_for_init_feats(FRAME *frame, vector<cv::KeyPoint>& Points, cv::Mat &Descriptors, vector<cv::Mat> &Patches_init, vector<cv::Mat> &Patches_match)
 {
+    using clock = std::chrono::steady_clock;
+    const bool prof = localslam::visual_profile::enabled();
+    const auto t_detect = clock::now();
 
     vector<cv::KeyPoint> keyPoints;
 
@@ -92,6 +97,11 @@ void EKF::Get_img_points_for_init_feats(FRAME *frame, vector<cv::KeyPoint>& Poin
     Remove_close_points(Points, sscKP); // remove visual points that are to close to already mapped visual features
 
     detector->compute(frame->image, Points, Descriptors); // compute descriptors for Keypoints
+
+    if (prof) {
+      localslam::visual_profile::note_detect_init_ms(
+        localslam::visual_profile::ms_since(t_detect));
+    }
 
      
     int hp_init = PAR.Images_half_patch_size_when_initialized;

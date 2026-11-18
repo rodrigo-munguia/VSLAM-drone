@@ -13,6 +13,12 @@ data_files.append(('share/' + package_name + '/worlds', [
     'worlds/hall2.wbt',
     'worlds/my_world.wbt',
     'worlds/my_world_x.wbt',
+    'worlds/earth_aerial.wbt',
+    'worlds/earth_aerial_probe_20.wbt',
+    'worlds/earth_aerial_probe_50.wbt',
+    'worlds/earth_aerial_probe_100.wbt',
+    'worlds/earth_aerial_texture.jpg',
+    'worlds/earth_aerial_texture.PROVENANCE.txt',
     'worlds/marker23.png',
 ]))
 data_files.append(('share/' + package_name + '/resource', [
