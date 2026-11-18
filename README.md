@@ -1,14 +1,34 @@
 # EKF-MonoSLAM Aided by Range-to-Base Measurements
 
-C++ ROS 2 implementation of the SLAM approach described in:
+C++ ROS 2 research / simulation stack for monocular EKF-SLAM on UAVs, with
+range-aided landmark initialization and Webots bring-up.
 
-**“UAV Navigation Using EKF-MonoSLAM Aided by Range-to-Base Measurements”**  
-https://doi.org/10.3390/drones9080570
+**License:** [MIT](LICENSE)
 
-![](figures/Graphical_abstract.png)
+![](figures/webots_earth_aerial_slam.jpg)
 
-This repository is a **standalone research / simulation stack**. It is
-**independent of the UAV accelerator** project.
+*Webots `earth_aerial` flight with Plot2: downward camera features, estimated
+vs ground-truth pose, and local map / path.*
+
+This repository is a **standalone** stack (independent of the UAV Accelerator
+project).
+
+## References
+
+1. R. Munguia, J. C. Trujillo, A. Grau,  
+   **UAV navigation using EKF-MonoSLAM aided by range-to-base measurements**,  
+   *Drones* 9 (8), 570, 2025.  
+   https://doi.org/10.3390/drones9080570
+
+2. R. Munguia, A. Grau, Y. Bolea, G. Obregón-Pulido,  
+   **A simultaneous control, localization, and mapping system for UAVs in GPS-denied environments**,  
+   *Drones* 9 (1), 69, 2025.  
+   https://doi.org/10.3390/drones9010069
+
+3. R. Munguia, J. C. Trujillo, E. Guerra, A. Grau,  
+   **A hybrid visual-based SLAM architecture: Local filter-based SLAM with keyframe-based global mapping**,  
+   *Sensors* 22 (1), 210, 2022.  
+   https://doi.org/10.3390/s22010210
 
 ## Tested environment
 
@@ -17,11 +37,10 @@ This repository is a **standalone research / simulation stack**. It is
 | OS | Ubuntu 24.04 |
 | ROS 2 | Jazzy |
 | Webots | R2025a |
-| Viewer (default) | Plot2 (ImGui / GLFW) |
-| Viewer (optional) | RViz2 |
-
-Older README notes mentioning Galactic / Webots R2023a describe the upstream
-paper baseline, not the current Jazzy bring-up.
+| Default launcher | `./launch4.sh` |
+| Default world | `earth_aerial.wbt` |
+| Default viewer | Plot2 (ImGui / GLFW) |
+| Optional viewer | RViz2 |
 
 ## Components
 
@@ -32,40 +51,37 @@ paper baseline, not the current Jazzy bring-up.
 RViz2.
 
 **Also in-tree (not required for the default experiment):** Global SLAM,
-dataset playback. The legacy OpenCV **`plot`** package has been **removed**.
+dataset playback.
 
 ## Dependencies
 
 **Required for the integrated experiment**
 
-- ROS 2 Jazzy + `webots_ros2` (`sudo apt-get install ros-jazzy-webots-ros2`)
-- Webots R2025a (`WEBOTS_HOME`)
+- ROS 2 Jazzy + `webots_ros2`  
+  `sudo apt-get install ros-jazzy-webots-ros2`
+- Webots R2025a (`WEBOTS_HOME`, typically `/usr/local/webots`)
 - Armadillo + BLAS/LAPACK
-- OpenCV (contrib modules as needed by Local/Global SLAM; **VIZ/VTK not required** after `plot` removal)
-- GTSAM 4.2.x (required to build `globalslam`; user prefix via
-  `CMAKE_PREFIX_PATH` / `GTSAM_DIR` — see `tools/gtsam_prefix.env.example`)
+- OpenCV (contrib as needed by Local/Global SLAM)
+- GTSAM 4.2.x only if building `globalslam` (see `tools/gtsam_prefix.env.example`)
 
 **Optional**
 
-- `libglfw3-dev` — required only for Plot2
-- `ros-jazzy-rviz2` — required only for `--viewer rviz2`
-- ImGui sources are vendored under `src/plot2`
+- `libglfw3-dev` — required to build Plot2
+- `ros-jazzy-rviz2` — only for `--viewer rviz2`
 
-**Deferred:** FluidPressure altitude input remains deferred (derived GPS-height
-altitude is the default).
-
-## Build (conventional trees)
+## Installation / build
 
 ```bash
 cd ~/DEV/projects/EKF-MonoSLAM-Range-To-Base
 source /opt/ros/jazzy/setup.bash
-# Plot2 needs GLFW headers at build time:
-sudo apt-get install libglfw3-dev
+sudo apt-get install -y libglfw3-dev ros-jazzy-webots-ros2
 
 colcon build \
   --packages-select interfaces localslam webotbridge control \
     ekf_monoslam_bringup webot_package plot2 keyboard \
   --build-base build --install-base install
+
+source install/setup.bash
 ```
 
 Standalone Local SLAM only:
@@ -75,79 +91,80 @@ colcon build --packages-select interfaces localslam \
   --build-base build --install-base install
 ```
 
-Global SLAM (requires GTSAM 4.2.x on `CMAKE_PREFIX_PATH`; not in `./launch2.sh`):
+Global SLAM (optional; needs GTSAM on `CMAKE_PREFIX_PATH`):
 
 ```bash
-# set -a && source tools/gtsam_prefix.env && set +a   # see .env.example
+# set -a && source tools/gtsam_prefix.env && set +a
 colcon build --packages-select interfaces globalslam \
   --build-base build --install-base install
-source install/setup.bash
-ros2 launch globalslam globalslam.launch.py   # works from /tmp
 ```
 
-Normal `globalslam` builds **fail** if GTSAM is missing. Policy-unit-tests only
-(no component): `--cmake-args -DGLOBALSLAM_POLICY_TESTS_ONLY=ON`.
+Override the install prefix with `EKF_INSTALL_BASE` if needed (default:
+`install/`).
 
-Override the install prefix with `EKF_INSTALL_BASE` if needed (default for
-`./launch2.sh` is `install/`).
+## Run the simulation (preferred: launch4)
 
-## One-command integrated launch
-
-Two quadrotor LocalSLAM profiles:
-
-| Launcher | Default YAML | Range | LocalSLAM mode |
-|---|---|---|---|
-| `./launch2.sh` | `config/quad_params.yaml` | Sonar | **Velocity-aided** (`Speed_update: true`, `min_vel: 0.1`, `Sigma_a: 6`, `Sigma_cam_uv: 10`) |
-| `./launch3.sh` | `config/quad_params_no_velocity.yaml` | Sonar | **Velocity-free optimized** (`Speed_update: false`, `min_vel: -1`, `Sigma_a: 4`, `Sigma_cam_uv: 10`) |
-| `./launch4.sh` | `config/quad_params_no_velocity_tfa300l.yaml` | TFA300-L | **Laser + velocity-free** (T2 velocity keys + laser gates/confidence; altitude→depth fallback off) |
-
-`launch3.sh` / `launch4.sh` reuse `launch2.sh`. Explicit `--params-file` / `--range-sensor` override defaults. Velocity-aided production tuning is unchanged. Evidence: [`docs/evidence/lslam_nov_vel_t2/`](docs/evidence/lslam_nov_vel_t2/), [`docs/evidence/lslam_range_b4/`](docs/evidence/lslam_range_b4/).
+**Default production path** is laser-assisted, velocity-free LocalSLAM
+(TFA300-L profile) in the Earth-like world:
 
 ```bash
 source /opt/ros/jazzy/setup.bash
 source install/setup.bash
-./launch2.sh                         # velocity-aided baseline (sonar range)
-./launch3.sh                         # optimized velocity-free LocalSLAM (sonar)
-./launch4.sh                         # velocity-free + TFA300-L laser (B4 profile)
-./launch4.sh --world earth_aerial.wbt  # B4 laser profile in ENV-A1 Earth-like world
-./launch2.sh --range-sensor tfa300l  # velocity-aided + TFA300-L laser
-./launch3.sh --range-sensor tfa300l  # velocity-free + TFA300-L laser (gates overlay only)
-./launch3.sh --globalslam false --viewer plot2
-./launch2.sh --params-file "$PWD/config/quad_params_no_velocity.yaml"  # same as launch3 default
-# equivalents / options (apply to launch2, launch3, or launch4):
-./launch2.sh --viewer plot2
-./launch2.sh --viewer rviz2
-./launch2.sh --viewer none
-./launch2.sh --slam-feedback false   # Stage A: GT GPS control feedback
-./launch2.sh --globalslam true       # Global Path/cloud; Local feedback still off
-# G6d: BA feedback off + tag-loop Local feedback on (coordinated):
-./launch2.sh --globalslam true \
-  --apply-ba-corrections false --apply-tag-loop-corrections true \
-  --slam-feedback false
-# Compatibility master (forces Apply_* for each enabled source; never enables visual):
-./launch2.sh --globalslam true --global-corrections true --slam-feedback false
-./launch2.sh --globalslam true --global-corrections true \
-  --slam-feedback true --slam-feedback-interface odometry \
-  --control-plan "$(pwd)/control_plan_g6b.txt"
+
+./launch4.sh --control-plan "$PWD/control_plan.txt"
 ```
 
-Starts **one** Webots, **one** application container, **one** chosen viewer
-(or none), plus an operator terminal. Status/logs stay in the launching
+`launch4.sh` defaults:
+
+| Setting | Default |
+|---|---|
+| World | `earth_aerial.wbt` |
+| Params | `config/quad_params_no_velocity_tfa300l.yaml` |
+| Range | `tfa300l` (`/laser_range`) |
+| Auto-start plan | **off** — start from EKF-Operator |
+
+Equivalent explicit form:
+
+```bash
+./launch4.sh \
+  --world earth_aerial.wbt \
+  --control-plan "$PWD/control_plan.txt"
+```
+
+Useful options (forwarded through `launch2.sh`):
+
+```bash
+./launch4.sh --viewer plot2          # default Plot2
+./launch4.sh --viewer rviz2
+./launch4.sh --viewer none
+./launch4.sh --slam-feedback false   # GT GPS control feedback (YAML default)
+./launch4.sh --auto-start-plan true  # start mission without pressing 'a'
+./launch4.sh --globalslam true       # optional Global SLAM
+```
+
+### Other launchers
+
+| Launcher | Default YAML | Range | Notes |
+|---|---|---|---|
+| **`./launch4.sh`** | `quad_params_no_velocity_tfa300l.yaml` | TFA300-L | **Preferred** — laser + velocity-free + `earth_aerial` |
+| `./launch3.sh` | `quad_params_no_velocity.yaml` | Sonar | Velocity-free, sonar |
+| `./launch2.sh` | `quad_params.yaml` | Sonar | Velocity-aided baseline; default world `mars.wbt` |
+
+```bash
+./launch3.sh                         # sonar + velocity-free
+./launch2.sh                         # sonar + velocity-aided
+./launch2.sh --world earth_aerial.wbt
+```
+
+Starts **one** Webots, **one** application container, **one** viewer (or
+none), plus an **EKF-Operator** terminal. Status/logs stay in the launching
 terminal. Ctrl-C cleans up launcher-owned processes.
 
-G6d: `Enable_*` / `Apply_*` are independent per source (BA, tag loop, visual
-ORB/PnP). All `Apply_*` default **false**. `--global-corrections true` is a
-compatibility master that forces `Apply_*` only for enabled sources and forces
-`Coordinate_mode=required` (no absent_ok/offline_bypass). It does **not**
-silently enable visual-loop processing. `--slam-feedback` selects Control nav
-pose source only — it is **not** Local correction enablement. See
-[`docs/evidence/g6b/G6d_CLOSEOUT.md`](docs/evidence/g6b/G6d_CLOSEOUT.md).
-
-Viewer differences: see [`docs/viewers.md`](docs/viewers.md).
+Viewer notes: [`docs/viewers.md`](docs/viewers.md).
 
 ## Operator controls
 
-In the **EKF-Operator** terminal:
+In the **EKF-Operator** terminal (plan does **not** auto-start by default):
 
 | Key | Action |
 |---|---|
@@ -159,39 +176,33 @@ In the **EKF-Operator** terminal:
 | flight keys | `r/f/d/g` translate, `i/k` up/down, `j/l` yaw, space stop |
 
 Plot2-only keys (`-/+`, `1`–`3`, pan `4/5/6/8`, `7` clear, `9` screenshot) are
-active only when `--viewer plot2`. Under RViz2, use RViz’s own navigation UI.
+active only when `--viewer plot2`.
 
 ## Configuration
 
 | Source | Role |
 |---|---|
-| `config/quad_params.yaml` | **Authoritative** experiment parameters |
-| `control_plan.txt` | Default mission plan (installed with bringup) |
+| `config/quad_params_no_velocity_tfa300l.yaml` | **Default** for `launch4` (laser + velocity-free) |
+| `config/quad_params.yaml` | Velocity-aided sonar baseline (`launch2`) |
+| `config/quad_params_no_velocity.yaml` | Velocity-free sonar (`launch3`) |
+| `control_plan.txt` | Default mission plan |
 | `config/mobile_params.yaml`, `omni_params.yaml` | Alternate platforms |
 
-Installed copies live under
-`install/ekf_monoslam_bringup/share/ekf_monoslam_bringup/`. After editing
-`config/` or `control_plan.txt`, **rebuild/reinstall `ekf_monoslam_bringup`**
-so the share tree updates (do not maintain a second conflicting copy by hand).
+After editing `config/` or `control_plan.txt`, rebuild/reinstall
+`ekf_monoslam_bringup` so the installed share tree updates when you rely on
+installed defaults. Absolute `--params-file` / `--control-plan` paths load
+source files directly.
 
-### LocalSLAM range acceptance (B2–B4) and sensor selection
+### LocalSLAM range acceptance (summary)
 
-Under `/lslam` (metres; exclusive bounds; sonar defaults unless noted):
+| Parameter | Sonar default | Laser (`launch4`) |
+|---|---:|---:|
+| `Range_assoc_min_m` | 0.4 | 0.1 |
+| `Range_assoc_max_m` | 6.0 | 150.0 |
+| `Range_init_min_m` | 0.5 | 0.5 |
+| `Range_allow_altitude_fallback` | true | false |
 
-| Parameter | Sonar default | Laser (`launch4`) | Semantics |
-|---|---:|---:|---|
-| `Range_assoc_min_m` | 0.4 | 0.1 | Accept range iff `min < r < max` |
-| `Range_assoc_max_m` | 6.0 | 150.0 | Upper exclusive association limit |
-| `Range_init_min_m` | 0.5 | 0.5 | `undelayed_range` init iff `r > Range_init_min_m` |
-| `Range_allow_altitude_fallback` | true | false | Altitude→`FRAME.range` for init only |
-| `Range_sensor_max_*` / `Sigma_cam_initial_depth_*` | sonar beam model | provisional confidence aperture | σ class only — not feature eligibility |
-
-`--range-sensor sonar` remaps `~/downward_range` → `/downward_range` (`ds0`).
-`--range-sensor tfa300l` remaps to `/laser_range` and merges gate overlay
-[`config/range_sensor_tfa300l.yaml`](config/range_sensor_tfa300l.yaml)
-without changing velocity/`Sigma_a`/`Sigma_cam_uv`. Full laser confidence +
-fallback-off profile: [`config/quad_params_no_velocity_tfa300l.yaml`](config/quad_params_no_velocity_tfa300l.yaml)
-via `./launch4.sh`. See [`docs/evidence/lslam_range_b4/`](docs/evidence/lslam_range_b4/).
+See [`docs/evidence/lslam_range_b4/`](docs/evidence/lslam_range_b4/).
 
 ## Standalone Local SLAM
 
@@ -200,7 +211,7 @@ source install/setup.bash
 ros2 launch localslam localslam.launch.py
 ```
 
-Remap standard inputs (`~/image`, `~/imu`, `~/odometry`, …) as documented in
+Remap standard inputs (`~/image`, `~/imu`, `~/odometry`, …) as in
 `docs/history/A7_localslam_standalone.md`.
 
 ## Interfaces (summary)
@@ -214,61 +225,30 @@ related experiment messages; `interfaces/EstimatorReference` (latched Local
 SLAM reference epoch for GT adapters).
 
 **Ground truth:** `nav_msgs/Path` `/ground_truth/path` (RViz2) and
-`geometry_msgs/PointStamped` `GT_topic` (Plot2) from the same synchronized
-Webots→public-odom conversion. Path pose orientation is identity
-(unspecified).
+`geometry_msgs/PointStamped` `GT_topic` (Plot2).
 
 ## Repository layout
 
 ```
-config/          experiment YAML (authoritative)
+config/          experiment YAML
 control_plan.txt default plan
-launch/          repo-level launch helpers
-launch2.sh       velocity-aided integrated entry point
-launch3.sh       velocity-free optimized entry point (wraps launch2.sh)
+launch4.sh       preferred integrated entry (laser + earth_aerial)
+launch3.sh       velocity-free sonar
+launch2.sh       velocity-aided / shared backend
 src/             ROS packages + shared common/
 docs/            index, viewers, history/, evidence/
 tools/           smoke/, audit/, analysis/
-figures/         paper graphics
-build/ install/ log/   conventional colcon trees (gitignored)
+figures/         graphics used by this README
+LICENSE          MIT
+build/ install/  conventional colcon trees (gitignored)
 ```
-
-## Ground-truth / estimator reference (summary)
-
-Local SLAM publishes latched `~/estimator_reference`
-(`interfaces/EstimatorReference`) on init and when altitude home latches;
-`valid=false` on reset. The Webots bridge matches GPS history to
-`heading_stamp` / `altitude_stamp` (no first-`/odometry` or empty-Path
-epoch). Parameters under `/webotbridge` in `config/quad_params.yaml`:
-`GT_history_duration_sec`, `GT_match_max_dt_sec`, `GT_path_max_poses`
-(values &lt; 1 clamp to 1; **not** unlimited), `GT_path_frame_id`.
-
-Inspect: `ros2 topic echo /ground_truth/path --once` after
-`./launch2.sh --viewer rviz2`.
 
 ## Known limitations
 
 - Operational smoke checks are **not** accuracy or paper-parity claims.
-- Plot2 latest-estimate vs latest-GT error remains **approximate** (no full
-  temporal matching of estimator stamps).
-- GT Path orientation is unspecified (identity quaternion).
-- FluidPressure altitude support is deferred.
-- RViz2 does not show Plot2 image overlays or custom statistics.
-- Deprecated OpenCV `plot` is removed; do not expect its topic semantics.
-- Global SLAM G2–G6d: loadable component; session/epoch KF + correction
-  identity; standard Path/cloud; offline `LSposUpdate` apply path; G6a/G6b
-  `CorrectionCoordinate` pause/apply/feedback-barrier/release; unique
-  `OdometryMeta.snapshot_seq` association for Control acceptance before
-  odometry-plan resume; G6d independent `Enable_*`/`Apply_*` and
-  `GlobalLoopCommitted` informational event; optional
-  `./launch2.sh --globalslam true` with per-source `--apply-*-corrections`
-  or master `--global-corrections` (defaults **false**). Pause ack ≠ hover.
-  Visual ORB loop exclusive/off-by-default — not mission-claimed without
-  candidate evidence. Needs GTSAM 4.2.x via `CMAKE_PREFIX_PATH` /
-  `LD_LIBRARY_PATH`. See
-  [`docs/history/G1_globalslam_interface_contract.md`](docs/history/G1_globalslam_interface_contract.md)
-  and [`docs/evidence/g6b/G6d_CLOSEOUT.md`](docs/evidence/g6b/G6d_CLOSEOUT.md).
+- Plot2 latest-estimate vs latest-GT error remains approximate.
+- FluidPressure altitude support is deferred (derived GPS-height default).
+- Optional Global SLAM needs GTSAM 4.2.x; see
+  [`docs/history/G1_globalslam_interface_contract.md`](docs/history/G1_globalslam_interface_contract.md).
 
-More detail: [`docs/README.md`](docs/README.md),
-[`docs/history/A9_integrated_launch_plot2.md`](docs/history/A9_integrated_launch_plot2.md),
-[`docs/history/G1_globalslam_interface_contract.md`](docs/history/G1_globalslam_interface_contract.md).
+More detail: [`docs/README.md`](docs/README.md).
