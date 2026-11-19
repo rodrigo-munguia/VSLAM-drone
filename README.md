@@ -1,4 +1,4 @@
-# EKF-MonoSLAM Aided by Range-to-Base Measurements
+# VSLAM-drone
 
 C++ ROS 2 research / simulation stack for monocular EKF-SLAM on UAVs, with
 range-aided landmark initialization and Webots bring-up.
