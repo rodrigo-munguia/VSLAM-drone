@@ -102,12 +102,12 @@ Usage: ./launch2.sh [options]
   --no-plot2                 Compatibility alias for --viewer none
   --no-webots                Do not spawn Webots (app+keyboard only)
   --no-keyboard              Do not spawn operator terminal
-  --traj-v-max M/S           Legacy isotropic traj vmax (default 3.0; prefer xy/z)
-  --traj-v-max-xy M/S        Traj XY vmax (production default 3.0; ≤0 → inherit)
+  --traj-v-max M/S           Legacy isotropic traj vmax (default 5.0; prefer xy/z)
+  --traj-v-max-xy M/S        Traj XY vmax (production default 5.0; prior 3.0 selectable)
   --traj-v-max-z M/S         Traj Z vmax (production default 1.5; ≤0 → inherit)
   --traj-a-max M/S2          Trajectory amax (default 0.8)
   --traj-j-max M/S3          Trajectory jmax (default 2.0)
-  --tracker-v-max-xy M/S     Tracker XY v_sp sat (production default 3.5)
+  --tracker-v-max-xy M/S     Tracker XY v_sp sat (production default 5.5; prior 3.5)
   --tracker-v-max-z M/S      Tracker Z v_sp sat (default 1.5)
   -h, --help                 Show this help
 
@@ -115,7 +115,8 @@ Environment:
   EKF_INSTALL_BASE   Install overlay under repo (default: install)
   WEBOTS_HOME        Webots install (auto-detected if unset)
   ROS_DISTRO         Expected jazzy
-  GTSAM / LD_LIBRARY_PATH   Required when --globalslam true (see tools/gtsam_prefix.env.example)
+  GTSAM / LD_LIBRARY_PATH   Auto-configured when --globalslam true
+                            (tools/ensure_gtsam_runtime.sh; see gtsam_prefix.env.example)
 EOF
 }
 
@@ -331,13 +332,17 @@ if [[ "$GLOBALSLAM" == "true" ]]; then
         ! -d "$INSTALL_DIR/globalslam/share/globalslam" ]]; then
     echo "error: --globalslam true but globalslam is not in $INSTALL_DIR"
     echo "Build globalslam with GTSAM visible, e.g.:"
-    echo "  set -a && source tools/gtsam_prefix.env && set +a"
+    echo "  # shellcheck source=tools/ensure_gtsam_runtime.sh"
+    echo "  source tools/ensure_gtsam_runtime.sh && ekf_ensure_gtsam_runtime \"\$PWD\""
     echo "  source /opt/ros/jazzy/setup.bash"
     echo "  colcon build --packages-select interfaces globalslam \\"
     echo "    --build-base build --install-base install"
-    echo "Keep LD_LIBRARY_PATH so libgtsam resolves at runtime."
     exit 1
   fi
+  # Runtime: resolve libgtsam.so.4 before loading the gslam component.
+  # shellcheck source=tools/ensure_gtsam_runtime.sh
+  source "$ROOT/tools/ensure_gtsam_runtime.sh"
+  ekf_ensure_gtsam_runtime "$ROOT"
 fi
 
 # ROS setup scripts reference optional unset vars; relax -u while sourcing.
@@ -401,7 +406,12 @@ open_term() {
   esac
 }
 
+# Propagate GTSAM lib path into helper terminals when Global SLAM is on
+# (component_container inherits this shell's environment directly).
 SETUP_CMD="source /opt/ros/jazzy/setup.bash; source '$INSTALL_DIR/setup.bash'; export WEBOTS_HOME='${WEBOTS_HOME:-}'; export EKF_VIEWER='$VIEWER'"
+if [[ "$GLOBALSLAM" == "true" ]]; then
+  SETUP_CMD+="; export GTSAM_PREFIX='${GTSAM_PREFIX:-}'; export LD_LIBRARY_PATH='${LD_LIBRARY_PATH:-}'; export CMAKE_PREFIX_PATH='${CMAKE_PREFIX_PATH:-}'"
+fi
 
 echo "=== EKF MonoSLAM integrated launch ==="
 echo "ROOT=$ROOT"

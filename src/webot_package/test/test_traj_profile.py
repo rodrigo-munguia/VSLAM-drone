@@ -141,11 +141,21 @@ def test_amax_ok():
 
 
 def test_production_defaults_are_r5a():
-    assert TRAJ_V_MAX_XY == pytest.approx(3.0)
+    # A3g: validated 5.0 / 5.5 cruise defaults (prior 3.0 / 3.5 via V3 / launch flags).
+    assert TRAJ_V_MAX_XY == pytest.approx(5.0)
     assert TRAJ_V_MAX_Z == pytest.approx(1.5)
     assert TRAJ_A_MAX == pytest.approx(0.8)
     assert TRAJ_J_MAX == pytest.approx(2.0)
-    assert V_MAX_XY == pytest.approx(3.5)
+    assert V_MAX_XY == pytest.approx(5.5)
     assert V_MAX_Z == pytest.approx(1.5)
     assert PROFILE_R5A.effective_v_xy() == pytest.approx(TRAJ_V_MAX_XY)
     assert PROFILE_R5A.effective_v_z() == pytest.approx(TRAJ_V_MAX_Z)
+    assert TRAJ_V_MAX_XY <= V_MAX_XY + 1e-12
+
+
+def test_prior_3ms_profile_still_selectable():
+    from webot_package.traj_profile import PROFILE_R5A_V3, PROFILES
+    assert PROFILE_R5A_V3.effective_v_xy() == pytest.approx(3.0)
+    assert PROFILES["V3"].effective_v_xy() == pytest.approx(3.0)
+    assert PROFILES["R5a_horiz3"].effective_v_xy() == pytest.approx(3.0)
+    assert PROFILES["V5"].effective_v_xy() == pytest.approx(5.0)

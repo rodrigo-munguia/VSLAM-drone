@@ -42,13 +42,22 @@ class TrajProfile:
 PROFILE_A = TrajProfile("A_baseline", 1.5, 0.8, 2.0)
 PROFILE_B = TrajProfile("B_fast", 3.0, 0.8, 2.0)
 PROFILE_C = TrajProfile("C_fast_smooth", 3.0, 0.8, 1.0)
-# R5a production: independent XY/Z traj (tracker XY 3.5 / Z 1.5).
+# A3g production: independent XY/Z traj (tracker XY 5.5 / Z 1.5).
 PROFILE_R5A = TrajProfile(
-    "R5a_horiz3",
+    "R5a_horiz5",
     TRAJ_V_MAX_XY,
     TRAJ_A_MAX,
     TRAJ_J_MAX,
     v_max_xy=TRAJ_V_MAX_XY,
+    v_max_z=TRAJ_V_MAX_Z,
+)
+# Prior 3 m/s cruise (selectable via launch flags; not module default).
+PROFILE_R5A_V3 = TrajProfile(
+    "R5a_horiz3",
+    3.0,
+    TRAJ_A_MAX,
+    TRAJ_J_MAX,
+    v_max_xy=3.0,
     v_max_z=TRAJ_V_MAX_Z,
 )
 
@@ -60,7 +69,10 @@ PROFILES = {
     "C": PROFILE_C,
     "C_fast_smooth": PROFILE_C,
     "R5A": PROFILE_R5A,
-    "R5a_horiz3": PROFILE_R5A,
+    "R5a_horiz5": PROFILE_R5A,
+    "R5a_horiz3": PROFILE_R5A_V3,
+    "V3": PROFILE_R5A_V3,
+    "V5": PROFILE_R5A,
 }
 
 

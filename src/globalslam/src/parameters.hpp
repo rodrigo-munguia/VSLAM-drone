@@ -39,8 +39,10 @@ struct parameters
     // GSLAM-INIT-D4: optional birth two-view reprojection gate (default off).
     bool Init_birth_reproj_gate_enable;
     double Init_birth_reproj_max_rms_px;
-    // GSLAM-BA-D6: opt-in relative KF pose init from last GS pose (default off).
+    // GSLAM-BA-D6 / CONFIG-A1: relative KF pose init from last GS pose (default on).
     bool Init_relative_kf_pose_enable;
+    // GSLAM-KF-Z-A5: hybrid XY-relative / Z-absolute admit (default on; requires relative).
+    bool Init_hybrid_kf_z_absolute_enable;
 
     // Visibility Graph
     int VG_img_search_margin;
@@ -77,6 +79,10 @@ struct parameters
     bool CL_update_z;
     bool CL_use_robot_uncertainty;
     bool CL_use_only_home_kf;
+    /** A2d: max PnP verifies per visual Step on ranked candidates. */
+    int CL_visual_max_pnp_attempts;
+    /** A3g: min KF-chain traveled distance (m) for visual LC candidates. */
+    double CL_min_historical_travel_m;
     double CL_tag_max_xy_dis;
     int CL_tag_max_xy_dis_px;
 

@@ -1,0 +1,4 @@
+TakeOff
+pointa,0,0,60,0
+pointa,20,0,60,0
+pointa,0,0,60,0

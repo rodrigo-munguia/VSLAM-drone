@@ -1,0 +1,394 @@
+# A3d-0 overlay of quad_params_no_velocity_tfa300l.yaml
+# Differs: GT_path_max_poses, Unified_traj_timeout_s, maxControlSignal_xy±5.
+# Primary cruise under Unified_mission is Webots traj_v_max_xy (launch flags),
+# not maxControlSignal_xy. A3d uses --traj-v-max-xy 5 --tracker-v-max-xy 5.5.
+# Laser-assisted velocity-free LocalSLAM (LSLAM-RANGE-B4).
+# Default for ./launch4.sh. Derived from quad_params_no_velocity.yaml (T2).
+# Preserves validated velocity-free keys:
+#   Speed_update: false
+#   Visual_update_min_vel_for_update_feats: -1.0
+#   Sigma_a: 4.0
+#   Sigma_cam_uv: 10.0
+# Laser envelope + confidence (provisional; not trajectory-tuned):
+#   Range gates 0.1/150/0.5; altitude→FRAME.range fallback OFF
+#   Effective confidence aperture ≠ physical TFA300-L beam (see B4 REPORT)
+# Evidence: docs/evidence/lslam_range_b4/
+/webotbridge:
+  ros__parameters:
+    # for error noise added to orientation measurements (rads)
+    Sigma_roll: 0.0017453
+    Sigma_pitch: 0.0017453
+    Sigma_yaw: 0.001745
+    # for error noise added to altitude measurements (m)
+    Sigma_Alt: 0.05
+    Sigma_Spd: 0.005 
+    Base_location: [0.0 ,0.0, 0.0] #  for mars location
+    #Base_location: [1.45 ,7.54425, 0.1]  # for factory environment
+    Sigma_rangetobase: 0.1  # for error noise added to range to base measurements (m)
+    # A8: CameraInfo matching A6 mars / localslam Mono_cam_* (raw path, D=0).
+    Publish_camera_info: true
+    Camera_width: 400
+    Camera_height: 240
+    Camera_fc_u: 200.0
+    Camera_fc_v: 200.0
+    Camera_cc_u: 200.0
+    Camera_cc_v: 120.0
+    Camera_alpha_c: 0.0
+    Camera_k1: 0.0
+    Camera_k2: 0.0
+    Camera_optical_frame: camera_optical_frame
+    # Ground-truth (public odom). Prefer EstimatorReference robot_init when present;
+    # these are fallbacks only (same internal convention as /lslam Robot_init_*).
+    GT_robot_init_x: 0.0
+    GT_robot_init_y: 0.0
+    GT_robot_init_z: 0.0
+    # Bounded GPS/IMU history for matching EstimatorReference stamps [s].
+    GT_history_duration_sec: 5.0
+    # Max |dt| from reference stamp to nearest GPS sample [s]; unresolved if exceeded.
+    GT_match_max_dt_sec: 0.15
+    # Max poses retained on /ground_truth/path. Values < 1 are clamped to 1
+    # (zero does NOT mean unlimited).
+    GT_path_max_poses: 50000
+    GT_path_frame_id: odom
+#--------------------------------------------------------------------------
+# Dataset component parameters
+/control:
+  ros__parameters:
+    # Default overridden at launch to ekf_monoslam_bringup share/control_plan.txt.
+    # Set an absolute path here to force an explicit override.
+    Control_plan_path: ""
+    # slam_feedback: false -> webot state feedback,  true ->  slam state feedback
+    Slam_feedback: false
+    # CTRL-R4d: mission sequencer → acknowledged unified trajectories (no go_point cmd_vel).
+    Unified_mission: true
+    Unified_traj_timeout_s: 360.0
+    # A3: SLAM feedback source when Slam_feedback=true ("odometry" | "legacy")
+    Slam_feedback_interface: odometry
+    Odometry_topic: odometry
+    Odometry_expect_frame_id: odom
+    Odometry_expect_child_frame_id: base_link
+    Ekf_enable_service: /EKFslam/enable
+    # proportional gains for control
+    # CTRL-A2: linear body-frame P → velocity cmd; vmax is cruise speed [m/s]
+    kp_x: 0.50
+    kp_y: 0.50
+    kp_z: 1.6
+    kp_yaw: 0.7
+    # Maximum/minimun allowed control signals
+    maxControlSignal_xy: 5.0
+    minControlSignal_xy: -5.0
+    maxControlSignal_z: 1.8
+    minControlSignal_z: -1.8
+    maxControlSignal_yaw: 0.2
+    minControlSignal_yaw: -0.2
+    # control precision
+    # CTRL-S5a: tight terminal settle (was 4.0 / hunt-era relaxation)
+    cp_x: 1.5
+    cp_y: 1.5
+    cp_z: 1.0
+    cp_yaw: 0.15
+    # Monocular camera intrinsic parameters
+    Mono_cam_img_rows: 240
+    Mono_cam_img_cols: 400
+    Mono_cam_distortions: [0.0, 0.0, 0.0, 0.0, 0.00000]
+    Mono_cam_cc_u: 200.00
+    Mono_cam_cc_v: 120.00
+    Mono_cam_fc_u: 200.0
+    Mono_cam_fc_v: 200.0
+    Mono_cam_alpha_c: 0.0
+    # Mono_cam_2_robot_axis_a z->y->x intrinisic axis rotations for defining the orientation of the camera frame with respect to robot frame
+    Mono_cam_2_robot_axis_x: 0.0
+    Mono_cam_2_robot_axis_y: 0.0
+    Mono_cam_2_robot_axis_z: 1.5707963268
+    # Mono_cam_2_robot vector position (expresed in the robot frame)
+    Mono_cam_2_robot_pos_x: 0.1
+    Mono_cam_2_robot_pos_y: 0.0
+    Mono_cam_2_robot_pos_z: 0.0
+    # Overlapping parameters for exploration
+    Explore_area_lambda_y: 0.8  #-0.5  #.25
+    Rec_Home_lambda_y: -0.8        
+    
+#--------------------------------------------------------------------------
+# Local slam component parameters    
+/lslam:
+  ros__parameters:
+    Data_origin: webots
+    # A1: "standard" uses remapped sensor_msgs/mavros inputs; "legacy" keeps custom topics
+    Sensor_input_mode: standard
+    # A9: keep A6 default derived_altitude (mavros/GPS-height). Do not synthesize pressure.
+    Altitude_input_mode: derived_altitude
+    Pressure_reference_policy: first_valid
+    Pressure_t0_K: 288.15
+    Pressure_min_Pa: 22632.0
+    Pressure_max_Pa: 108900.0
+    Pressure_z_lever_arm_m: 0.0
+    Pressure_expected_frame_id: ""
+    Pressure_waiting_bound: 2
+    # A8: preserve A6 YAML calibration by default (set camera_info to use ~/camera_info).
+    Calibration_source: yaml
+    Camera_info_image_path: raw
+    Camera_info_waiting_image_bound: 2
+    Camera_info_expected_frame_id: ""
+    Camera_info_qos_reliability: reliable
+    # A2: nav_msgs/Odometry frames (pose in parent, twist in child)
+    Odometry_frame_id: odom
+    Odometry_child_frame_id: base_link
+    Path_max_poses: 100000
+    # check x_vel_run_time has the same value for both de Dataset and the localslam component
+    x_vel_run_time: 1.0
+    Robot_state_size: 13    
+    Prediction_model: noise_driven
+    # Maximun frequency output of robot state in Hz. (Max_freq_output must be an integer > 10)
+    Max_freq_output: 33
+    Attitude_update: true
+    Altitude_update: true
+    Speed_update: false
+    Visual_update: true
+    GPS_update: false
+    Ground_station_range_update: false
+    # Robot initial conditions
+    Robot_init_x: 0.0
+    Robot_init_y: 0.0
+    Robot_init_z: 0.0
+    Robot_init_roll: 0.0
+    Robot_init_pitch: 0.0
+    Robot_init_yaw: 0.0
+    # Speed_sensor_frame to robot_frame rotation matrix  colum-major
+    Rot_spd_2_r: [1.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 1.0]
+    # range sensor
+    Range_sensor_offset: 0.0 
+    # B4: effective confidence aperture (NOT Webots physical laser aperture).
+    # Pattern ellipse: r_max=5 m at pattern=50 m ⇒ ~5.7° half-angle (≫ physical <0.5°).
+    Range_sensor_max_range_pattern: 50.0
+    Range_sensor_max_r_max: 5.0
+    Range_sensor_max_range_operation: 120.0
+    # B3/B4: simulated laser association envelope (exclusive).
+    Range_assoc_min_m: 0.1
+    Range_assoc_max_m: 150.0
+    Range_init_min_m: 0.5
+    # Never substitute GPS/baro altitude into FRAME.range for undelayed_range.
+    Range_allow_altitude_fallback: false
+    # Prediction parameters
+    Sigma_w: 0.1 
+    # Sigma_a: 6.00     
+    Sigma_a: 3.00
+    Tau_r: 1.0
+    Tau_p: 100000000000000000.0
+    # Updates sensor uncertanty parameters
+    Sigma_att_update: 0.001
+    Sigma_spd_update: 0.1
+    Sigma_alt_update: 0.1
+    Sigma_range_update: 0.2
+    #Sigma_cam_uv: 10.0
+    Sigma_cam_uv: 10.0
+    Sigma_cam_uv_anchors: 10.0
+    # Provisional depth σ (m): not TFA300-L ranging precision; plane/extrapolation
+    # risk grows with height / off-axis. First landmark still uses production ×10.
+    Sigma_cam_initial_depth_range: 1.0
+    Sigma_cam_initial_depth_WOrange: 5.0
+    # -1 ->  change altitud (h) to down coordinates
+    Alt_h_2_d: -1
+    # features initialization method 
+    Visual_init_feats_method: "undelayed_range"
+    # ------ monocular camera parameters ----------------------------
+    Mono_cam_frame_period: 0.033333
+    # Mono_cam_2_robot_axis_a z->y->x intrinisic axis rotations for defining the orientation of the camera frame with respect to robot frame
+    # Mono_cam_2_robot_axis_x: 0.785398
+    Mono_cam_2_robot_axis_x: 0.0
+    Mono_cam_2_robot_axis_y: 0.0
+    Mono_cam_2_robot_axis_z: 1.5707963268
+    # Mono_cam_2_robot vector position (expresed in the robot frame)
+    Mono_cam_2_robot_pos_x: 0.1
+    Mono_cam_2_robot_pos_y: 0.0
+    Mono_cam_2_robot_pos_z: 0.0
+    # Monocular camera intrinsic parameters
+    Mono_cam_img_rows: 240
+    Mono_cam_img_cols: 400
+    Mono_cam_distortions: [0.0, 0.0, 0.0, 0.0, 0.0]
+    Mono_cam_cc_u: 200.0
+    Mono_cam_cc_v: 120.0
+    Mono_cam_fc_u: 200.00
+    Mono_cam_fc_v: 200.00
+    Mono_cam_alpha_c: 0.0
+    # visual detection and tracking parameters    
+    Images_number_candidate_points_detected: 50
+    Images_minimun_distance_new_points: 10
+    Images_half_patch_size_when_initialized: 20
+    Images_half_patch_size_when_matching: 6
+    Images_max_innov_pixels: 50
+    # For deleting feats and anchors
+    Visual_delete_Maximun_number_feats_allowed: 100
+    Visual_delete_Maximun_number_anchors_allowed: 50
+    Visual_delete_minimun_feats_in_state_before_delete: 50    
+    Visual_delete_minimun_RatioMatched: 0.3    
+    # visual update parameters
+    Visual_update_use_1RANSAC_for_validation: true
+    Visual_update_attitude_update: false
+    # If there is not speed measurements, "Visual_update_min_vel_for_update_feats" must be whichever negative value 
+    Visual_update_min_vel_for_update_feats: -1.0
+    Visual_update_use_anchors: true
+    # uncertainty_depth_anchor_init: the smaller value the more the uncertanty has to converged to initialize the anchor
+    Visual_update_uncertainty_depth_anchor_init: 0.08
+    # parameters for selecting Keyframes
+    Select_KeyFrames_min_n_frames_between_kf: 5
+    Select_KeyFrames_min_n_matches: 5
+    Select_KeyFrames_min_ratio_distance_depth: 0.15
+    # Position update from the (local) Bundle adjustment carried out by the global slam
+    GS_xy_update: true
+    GS_z_update: false
+    GS_xy_update_max_delta: 0.1
+    GS_z_update_max_delta: 0.1
+    # Position update from the close loop process carried out by the global slam
+    CL_xy_update: true
+    CL_z_update: false
+    CL_xy_update_max_delta: 15.0
+    CL_z_update_max_delta: 1.0
+    # Robot x-y uncertainty (used for exploration home area)
+    CL_Sigma_x: 0.2
+    CL_Sigma_y: 0.2   
+    CL_min_vel_cl_uncertainty_update: 0.05
+    CL_Compute_Cp_from_start: false
+    # Activate/Deactivate statistics 
+    Stats: true
+#--------------------------------------------------------------------------
+# Plot2 component parameters (ImGui viewer; default for ./launch2.sh)
+/plot2:
+  ros__parameters:
+    label_logs: CONFB
+#--------------------------------------------------------------------------
+# Global slam component parameters     
+/gslam:
+  ros__parameters:
+    # G6d: independent processing vs Local feedback (all feedback default off).
+    Enable_global_ba: true
+    Enable_tag_loop_closure: true
+    Enable_visual_loop_closure: false
+    Apply_ba_corrections: false
+    Apply_tag_loop_corrections: true
+    Apply_visual_loop_corrections: false
+    # Compatibility master: launch --global-corrections true forces Apply_* for
+    # enabled sources only (never enables visual processing by itself).
+    Apply_global_corrections: false
+    # Standalone defaults disabled; integrated ./launch2.sh --globalslam true
+    # forces Processing_start_enabled=true at launch.
+    Processing_start_enabled: false
+    # G6a/G6b coordination (dormant while no Apply_* feedback is enabled).
+    # Integrated Local feedback rejects absent_ok / offline_bypass.
+    Coordinate_mode: required
+    Coordinate_pause_timeout_ms: 2000
+    Coordinate_feedback_barrier_timeout_ms: 5000
+    # G4 public visualization (same parent as Local SLAM odometry; not a map frame).
+    Public_frame_id: odom
+    # 0 = publish full committed snapshot (limits apply to viz copies only).
+    Path_max_poses: 0
+    Landmark_cloud_max_points: 0
+    # Monocular camera intrinsic parameters (must match /lslam for integrated G4)
+    Mono_cam_img_rows: 240
+    Mono_cam_img_cols: 400
+    Mono_cam_distortions: [0.0, 0.0, 0.0, 0.0, 0.00000]
+    Mono_cam_cc_u: 200.00
+    Mono_cam_cc_v: 120.00
+    Mono_cam_fc_u: 200.0
+    Mono_cam_fc_v: 200.0
+    Mono_cam_alpha_c: 0.0
+    # Initialization of global map points (anchors)
+    # A high value of "Init_number_candidate_points_per_kf" can cause a malloc crash
+    Init_use_anms_for_select_strong_points: true
+    Init_anms_tolerance: 0.3      
+    Init_number_candidate_points_per_kf: 1000 #2500
+    Init_min_distance_to_previous_mapped_features: 1
+    Init_min_depth_to_consider: .2
+    # Birth reprojection gate (INIT-D4 → production default ON; D2–D6 validated).
+    # Override off: Init_birth_reproj_gate_enable:=false or GSLAM_INIT_BIRTH_REPROJ_GATE_ENABLE=0
+    Init_birth_reproj_gate_enable: true
+    Init_birth_reproj_max_rms_px: 20.0
+    # Relative KF pose init (BA-D6 / CONFIG-A1). Default ON for launch2/launch4.
+    # Absolute admit: Init_relative_kf_pose_enable:=false or GSLAM_INIT_RELATIVE_KF_POSE=0
+    Init_relative_kf_pose_enable: true
+    # KF-Z-A5 hybrid Z-abs (production default ON). Full-relative: false or GSLAM_INIT_HYBRID_KF_Z_ABS=0
+    Init_hybrid_kf_z_absolute_enable: true
+    # visual match
+    VM_max_inov_error: 30
+    # Visibility graph
+    VG_img_search_margin: 15
+    # Delele points
+    Delete_min_kf_matched_for_keep_anchor: 3
+    # ------Bundle Adjusment----------------------------------------------------------
+    # Local Bundle adjusment can close "small trajectory loops"!
+    # The different combination of parameter values "BA_max_n_previous_kf_for_search_matches", "BA_max_n_kf_optimized" and  
+    # "BA_min_n_latest_kf_to_optimize" will define the behaviour for small loop closure
+    # ---------
+    # "BA_max_n_previous_kf_for_search_matches" set the maximun number of previous kf to consider for searching matches, 
+    # set the number to high can affect the gmap real-time performance
+    BA_max_n_previous_kf_for_search_matches: 20
+    # "BA_max_n_kf_optimized" set the maximun window size for local Bundle Adjusment
+    BA_max_n_kf_optimized: 10
+    # "BA_min_n_latest_kf_to_optimize" set the minimun number of previous kf, respect to the latest one, 
+    # that are considered in local-BA. It must be less or equal "BA_max_n_kf_optimized".
+    # The difference between "BA_max_n_kf_optimized" and "BA_min_n_latest_kf_to_optimize" is the number of oldest visually linked kf,
+    # that the local-BA will try to include.   
+    BA_min_n_latest_kf_to_optimize: 7
+    # Uncertanty noise parameters used for BA
+    BA_sigma_uv: 1.0
+    BA_sigma_kf_att: 0.001
+    BA_sigma_kf_xy: 0.05
+    BA_sigma_kf_z: 0.05
+    BA_sigma_kf_pt: 0.3
+    BA_update_kf_pos: true
+    BA_update_kf_att: true
+    BA_update_map: true
+    # Used for not considering norm|delta_pos| obtained from BA bigger than "BA_max_delta_kf_pos" (m)
+    BA_max_delta_kf_pos: 1.75
+    # Every GM_factor_anchors_sent_to_plot an anchor of the GM is sent to the plot module,e.g. a value of 1 plot all anchors
+    GM_factor_anchors_sent_to_plot: 10
+    #------ Close loop --------------------------------------------------------
+    #
+    # "CL_min_n_not_vl_kf": minimun number of consecutive non visually linked kf before searching for potential loop closures
+    CL_min_n_not_vl_kf: 10
+    # "CL_min_n_matches": minumun number of matches with mapped points to consider a close loop 
+    CL_min_n_matches: 40
+    # "CL_min_mean_reprojection_error" is used as treshold for the reprojection test used for validating the PnP pose.
+    # The bigger de value the most permisive is the test (more loops are detected), but the computed pose can be less accurate.
+    CL_min_mean_reprojection_error: 70.0
+    CL_xy_update_max_delta: 6.0
+    # Noise
+    CL_odo_sigma_kf_att: 0.0001
+    CL_odo_sigma_kf_xy: 0.05
+    CL_odo_sigma_kf_z: 0.05
+    CL_clo_sigma_kf_att: 0.00001
+    # CL_clo_sigma_kf_xy: 0.005
+    CL_clo_sigma_kf_xy: 0.0005
+    CL_clo_sigma_kf_z: 0.005
+    CL_update_z: false
+    # Use robot uncertainty in x-y pose for looking for previous mapped areas
+    CL_use_robot_uncertainty: false
+    CL_use_only_home_kf: false
+    CL_visual_max_pnp_attempts: 3
+    # A3g: min KF-chain traveled distance [m] for visual LC (not Euclid / travel_dis)
+    CL_min_historical_travel_m: 200.0
+    # For using an Aruco tag for CL  
+    CL_tag_max_xy_dis: 6.0
+    CL_tag_max_xy_dis_px: 90
+
+    # G6b.3: epoch-owned home-tag POSITION capture during RecHome
+    # CL_home_tag_id: ArUco ID (mars.wbt marker23.png → 23)
+    CL_home_tag_id: 23
+    # CL_home_tag_size_m: marker side length [m] (matches SolidBox 1×1)
+    CL_home_tag_size_m: 1.0
+    # CL_home_capture_min_inliers: minimum accepted unique KF samples (≥1)
+    CL_home_capture_min_inliers: 3
+    # CL_home_capture_min_inlier_fraction: inliers/candidates in (0,1]
+    CL_home_capture_min_inlier_fraction: 0.5
+    # CL_home_capture_max_spread_m: Euclidean reject/final residual [m]
+    CL_home_capture_max_spread_m: 1.5
+    # CL_home_capture_max_samples: unique KF candidate cap
+    CL_home_capture_max_samples: 40
+    # Activate/Deactivate statistics 
+    Stats: true  
+    
+    
+
+
+    
+
+    

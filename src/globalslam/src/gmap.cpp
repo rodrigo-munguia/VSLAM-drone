@@ -102,18 +102,53 @@ void GMAP::Update()
           gmap_relative_kf_init::from_keyframe(kf_new);
         gmap_ba_d5::dump_kf_pose("ekf_admit", idx_new, kf_new);
 
-        // BA-D6: optional relative init from latest committed GS pose.
-        // Must run before match / triangulation so the full pipeline uses T_GS.
-        if (PAR.Init_relative_kf_pose_enable && have_prev_ekf_cam_pose_ &&
-          idx_new > 0)
+        // BA-D6 / CONFIG-A1 / KF-Z-A5: hybrid XY-rel/Z-abs is production default.
+        // Must run before match / triangulation so the pipeline uses T_GS.
+        // Absolute admit: Init_relative_kf_pose_enable:=false / env=0.
+        // Full-relative: Init_hybrid_kf_z_absolute_enable:=false / HYBRID env=0.
+        const gmap_relative_kf_init::InitMode init_mode =
+          gmap_relative_kf_init::select_init_mode(
+            PAR.Init_relative_kf_pose_enable,
+            PAR.Init_hybrid_kf_z_absolute_enable,
+            have_prev_ekf_cam_pose_,
+            idx_new);
+        if (init_mode != gmap_relative_kf_init::InitMode::Absolute)
         {
           const gmap_relative_kf_init::CamPose T_gs_prev =
             gmap_relative_kf_init::from_keyframe(Gmap.KeyFDATA[idx_new - 1]);
-          const gmap_relative_kf_init::CamPose T_gs_curr =
+          const gmap_relative_kf_init::CamPose T_full_rel =
             gmap_relative_kf_init::propagate(
               T_gs_prev, prev_ekf_cam_pose_, T_ekf_curr);
+          gmap_relative_kf_init::CamPose T_gs_curr = T_full_rel;
+          if (init_mode == gmap_relative_kf_init::InitMode::HybridXyRelZAbs) {
+            T_gs_curr = gmap_relative_kf_init::propagate_xy_rel_z_abs(
+              T_gs_prev, prev_ekf_cam_pose_, T_ekf_curr);
+          }
           gmap_relative_kf_init::apply_cam_pose(kf_new, T_gs_curr);
-          gmap_ba_d5::dump_kf_pose("rel_admit", idx_new, kf_new);
+          gmap_ba_d5::dump_kf_pose(
+            init_mode == gmap_relative_kf_init::InitMode::HybridXyRelZAbs
+              ? "hybrid_admit"
+              : "rel_admit",
+            idx_new, kf_new);
+          gmap_relative_kf_init::maybe_log_admit_z(
+            init_mode,
+            idx_new,
+            kf_new.keyframe_id,
+            T_ekf_curr.t_c2n(2),
+            T_full_rel.t_c2n(2),
+            kf_new.t_c2n(2),
+            T_gs_prev.t_c2n(2));
+        } else {
+          gmap_relative_kf_init::maybe_log_admit_z(
+            init_mode,
+            idx_new,
+            kf_new.keyframe_id,
+            T_ekf_curr.t_c2n(2),
+            T_ekf_curr.t_c2n(2),
+            kf_new.t_c2n(2),
+            have_prev_ekf_cam_pose_ && idx_new > 0
+              ? Gmap.KeyFDATA[idx_new - 1].t_c2n(2)
+              : T_ekf_curr.t_c2n(2));
         }
 
         prev_ekf_cam_pose_ = T_ekf_curr;

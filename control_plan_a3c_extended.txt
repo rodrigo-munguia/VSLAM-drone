@@ -1,0 +1,11 @@
+TakeOff
+pointa,0,0,60,0
+StartSLAM
+ActivateVisualUpdate
+pointa,100,100,60,0
+pointa,100,-100,60,0
+pointa,-100,-100,60,0
+pointa,-100,100,60,0
+pointa,100,100,60,0
+pointa,0,0,60,0
+StopSLAM

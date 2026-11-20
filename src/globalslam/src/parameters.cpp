@@ -1,4 +1,5 @@
 #include "globalslam_component.hpp"
+#include "gmap_relative_kf_init.hpp"
 
 #include <cstdlib>
 #include <string>
@@ -27,8 +28,16 @@ void Gslam::setParameters()
   // Disable via ROS param or GSLAM_INIT_BIRTH_REPROJ_GATE_ENABLE=0.
   this->declare_parameter<bool>("Init_birth_reproj_gate_enable", true);
   this->declare_parameter<double>("Init_birth_reproj_max_rms_px", 20.0);
-  // Relative KF pose init (BA-D6). Disabled by default; env override for A/B.
-  this->declare_parameter<bool>("Init_relative_kf_pose_enable", false);
+  // Relative KF pose init (BA-D6 / CONFIG-A1). Default ON; absolute via
+  // Init_relative_kf_pose_enable:=false or GSLAM_INIT_RELATIVE_KF_POSE=0.
+  this->declare_parameter<bool>(
+    "Init_relative_kf_pose_enable",
+    gmap_relative_kf_init::kInitRelativeKfPoseDefault);
+  // KF-Z-A5 hybrid Z-absolute admit. Default ON. Effective only with relative ON.
+  // Full-relative: Init_hybrid_kf_z_absolute_enable:=false or GSLAM_INIT_HYBRID_KF_Z_ABS=0.
+  this->declare_parameter<bool>(
+    "Init_hybrid_kf_z_absolute_enable",
+    gmap_relative_kf_init::kInitHybridKfZAbsoluteDefault);
   this->declare_parameter<int>("VM_max_inov_error", 20);
   this->declare_parameter<int>("VG_img_search_margin", 15);
   this->declare_parameter<int>("Delete_min_kf_matched_for_keep_anchor", 3);
@@ -55,8 +64,11 @@ void Gslam::setParameters()
   this->declare_parameter<double>("CL_clo_sigma_kf_xy", 0.005);
   this->declare_parameter<double>("CL_clo_sigma_kf_z", 0.005);
   this->declare_parameter<bool>("CL_update_z", true);
-  this->declare_parameter<bool>("CL_use_robot_uncertainty", true);
+  this->declare_parameter<bool>("CL_use_robot_uncertainty", false);
   this->declare_parameter<bool>("CL_use_only_home_kf", false);
+  this->declare_parameter<int>("CL_visual_max_pnp_attempts", 3);
+  // A3g: significant-loop hist-path gate (visual only). Default 200 m.
+  this->declare_parameter<double>("CL_min_historical_travel_m", 200.0);
   this->declare_parameter<bool>("Stats", false);
   this->declare_parameter<double>("CL_tag_max_xy_dis", 4.0);
   this->declare_parameter<int>("CL_tag_max_xy_dis_px", 100);
@@ -113,10 +125,13 @@ void Gslam::setParameters()
   this->get_parameter("Init_birth_reproj_gate_enable", PAR.Init_birth_reproj_gate_enable);
   this->get_parameter("Init_birth_reproj_max_rms_px", PAR.Init_birth_reproj_max_rms_px);
   this->get_parameter("Init_relative_kf_pose_enable", PAR.Init_relative_kf_pose_enable);
+  this->get_parameter(
+    "Init_hybrid_kf_z_absolute_enable", PAR.Init_hybrid_kf_z_absolute_enable);
   // Optional env override for controlled A/B without YAML/default changes:
   //   GSLAM_INIT_BIRTH_REPROJ_GATE_ENABLE=1|0
   //   GSLAM_INIT_BIRTH_REPROJ_MAX_RMS_PX=<float>
-  //   GSLAM_INIT_RELATIVE_KF_POSE=1|0
+  //   GSLAM_INIT_RELATIVE_KF_POSE=1|0  (0 → absolute admit; 1 → relative)
+  //   GSLAM_INIT_HYBRID_KF_Z_ABS=1|0   (hybrid Z; requires relative)
   if (const char * e = std::getenv("GSLAM_INIT_BIRTH_REPROJ_GATE_ENABLE")) {
     if (e[0] != '\0') {
       PAR.Init_birth_reproj_gate_enable =
@@ -131,12 +146,14 @@ void Gslam::setParameters()
       }
     }
   }
-  if (const char * e = std::getenv("GSLAM_INIT_RELATIVE_KF_POSE")) {
-    if (e[0] != '\0') {
-      PAR.Init_relative_kf_pose_enable =
-        (e[0] == '1' || e[0] == 't' || e[0] == 'T' || e[0] == 'y' || e[0] == 'Y');
-    }
-  }
+  PAR.Init_relative_kf_pose_enable =
+    gmap_relative_kf_init::resolve_init_relative_kf_pose_enable(
+      PAR.Init_relative_kf_pose_enable,
+      std::getenv("GSLAM_INIT_RELATIVE_KF_POSE"));
+  PAR.Init_hybrid_kf_z_absolute_enable =
+    gmap_relative_kf_init::resolve_init_hybrid_kf_z_absolute_enable(
+      PAR.Init_hybrid_kf_z_absolute_enable,
+      std::getenv("GSLAM_INIT_HYBRID_KF_Z_ABS"));
   this->get_parameter("VM_max_inov_error", PAR.VM_max_inov_error);
   this->get_parameter("VG_img_search_margin", PAR.VG_img_search_margin);
   this->get_parameter("Delete_min_kf_matched_for_keep_anchor", PAR.Delete_min_kf_matched_for_keep_anchor);
@@ -166,6 +183,14 @@ void Gslam::setParameters()
   this->get_parameter("CL_update_z", PAR.CL_update_z);
   this->get_parameter("CL_use_robot_uncertainty", PAR.CL_use_robot_uncertainty);
   this->get_parameter("CL_use_only_home_kf", PAR.CL_use_only_home_kf);
+  this->get_parameter("CL_visual_max_pnp_attempts", PAR.CL_visual_max_pnp_attempts);
+  if (PAR.CL_visual_max_pnp_attempts < 1) {
+    PAR.CL_visual_max_pnp_attempts = 1;
+  }
+  this->get_parameter("CL_min_historical_travel_m", PAR.CL_min_historical_travel_m);
+  if (!(PAR.CL_min_historical_travel_m >= 0.0)) {
+    PAR.CL_min_historical_travel_m = 200.0;
+  }
   this->get_parameter("Stats", PAR.Stats);
   this->get_parameter("CL_tag_max_xy_dis", PAR.CL_tag_max_xy_dis);
   this->get_parameter("CL_tag_max_xy_dis_px", PAR.CL_tag_max_xy_dis_px);

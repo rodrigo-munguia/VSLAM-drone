@@ -278,6 +278,26 @@ if(BUILD_TESTING)
       ament_target_dependencies(test_gmap_relative_kf_init OpenCV)
       target_link_libraries(test_gmap_relative_kf_init ${BLAS_LIBRARIES} ${LAPACK_LIBRARIES})
     endif()
+    # GSLAM-VISUAL-LOOP-A2b: production cloop_visual_pnp::solve_and_accept.
+    ament_add_gtest(test_visual_loop_a2_pnp_geometry
+      test/test_visual_loop_a2_pnp_geometry.cpp
+      ../common/Vision/vision.cpp)
+    if(TARGET test_visual_loop_a2_pnp_geometry)
+      target_include_directories(test_visual_loop_a2_pnp_geometry PRIVATE src ../common)
+      ament_target_dependencies(test_visual_loop_a2_pnp_geometry OpenCV)
+      target_link_libraries(test_visual_loop_a2_pnp_geometry
+        ${BLAS_LIBRARIES} ${LAPACK_LIBRARIES} ${OpenCV_LIBS})
+    endif()
+    # GSLAM-VISUAL-LOOP-A2d: retrieval / ranking / PnP fallback helpers.
+    ament_add_gtest(test_visual_loop_a2d_retrieve
+      test/test_visual_loop_a2d_retrieve.cpp
+      ../common/Vision/vision.cpp)
+    if(TARGET test_visual_loop_a2d_retrieve)
+      target_include_directories(test_visual_loop_a2d_retrieve PRIVATE src ../common)
+      ament_target_dependencies(test_visual_loop_a2d_retrieve OpenCV)
+      target_link_libraries(test_visual_loop_a2d_retrieve
+        ${BLAS_LIBRARIES} ${LAPACK_LIBRARIES} ${OpenCV_LIBS})
+    endif()
   endif()
   find_package(ament_lint_auto QUIET)
   if(ament_lint_auto_FOUND)

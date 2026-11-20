@@ -176,6 +176,8 @@
     CL_min_n_not_vl_kf: 10
     # "CL_min_n_matches": minumun number of matches with mapped points to consider a close loop 
     CL_min_n_matches: 40
+    # A3g: min KF-chain traveled distance [m] for visual LC (not Euclid / travel_dis)
+    CL_min_historical_travel_m: 200.0
     # "CL_min_mean_reprojection_error" is used as treshold for the reprojection test used for validating the PnP pose.
     # The bigger de value the most permisive is the test (more loops are detected), but the computed pose can be less accurate.
     CL_min_mean_reprojection_error: 30.0

@@ -16,6 +16,9 @@
 # All other arguments are forwarded unchanged (including --control-plan and
 # --auto-start-plan). Plans do not auto-start by default; use EKF-Operator 'a'
 # (or pass --auto-start-plan true).
+#
+# GTSAM runtime for --globalslam true is configured inside launch2.sh
+# (tools/ensure_gtsam_runtime.sh); this wrapper does not set it separately.
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"

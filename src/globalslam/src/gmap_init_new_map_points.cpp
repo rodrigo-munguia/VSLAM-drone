@@ -498,15 +498,22 @@ std::vector<int64> GMAP::Init_new_map_points()
    int q = 10;
    (void)q;
 
-   // Minimal diagnostic: emit cumulative birth-gate counts when gate enabled.
+   // Birth-gate counters always update above. Console is opt-in (was per-KF spam).
+   //   GSLAM_BIRTH_REPROJ_GATE_VERBOSE=1  → cumulative cout when counts change
+   //   GSLAM_LANDMARK_AUDIT_DIR=<dir>     → birth_gate_counts.txt (existing)
    if (PAR.Init_birth_reproj_gate_enable) {
-     static int64_t last_logged_attempts = -1;
-     if (birth_gate_attempts != last_logged_attempts) {
-       last_logged_attempts = birth_gate_attempts;
-       cout << "gmap-> birth_reproj_gate attempts=" << birth_gate_attempts
-            << " accepted=" << birth_gate_accepted
-            << " rejected=" << birth_gate_rejected
-            << " max_rms_px=" << PAR.Init_birth_reproj_max_rms_px << endl;
+     const char * verbose = std::getenv("GSLAM_BIRTH_REPROJ_GATE_VERBOSE");
+     const bool verbose_on =
+       verbose != nullptr && verbose[0] != '\0' && verbose[0] != '0';
+     if (verbose_on) {
+       static int64_t last_logged_attempts = -1;
+       if (birth_gate_attempts != last_logged_attempts) {
+         last_logged_attempts = birth_gate_attempts;
+         cout << "gmap-> birth_reproj_gate attempts=" << birth_gate_attempts
+              << " accepted=" << birth_gate_accepted
+              << " rejected=" << birth_gate_rejected
+              << " max_rms_px=" << PAR.Init_birth_reproj_max_rms_px << endl;
+       }
      }
      if (const char * dir = std::getenv("GSLAM_LANDMARK_AUDIT_DIR")) {
        if (dir[0] != '\0') {

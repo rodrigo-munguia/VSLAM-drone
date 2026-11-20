@@ -16,6 +16,16 @@ the normal build/install tree).
 | `lslam_ctrl_r4e/` | Full-size unified mission validation ([REPORT.md](lslam_ctrl_r4e/REPORT.md)) |
 | `lslam_ctrl_r5/` | Speed/jerk ablation STOPPED — B/C infeasible vs V_MAX ([REPORT.md](lslam_ctrl_r5/REPORT.md)) |
 | `lslam_ctrl_r5a/` | Independent XY/Z traj limits; 3 m/s horiz feasibility ([REPORT.md](lslam_ctrl_r5a/REPORT.md)) |
+| `gslam_visual_loop_a1/` | Read-only audit of ORB/global-map visual loop closure ([REPORT.md](gslam_visual_loop_a1/REPORT.md)) |
+| `gslam_visual_loop_a2/` | Deterministic ORB/PnP geometry validation; NO-GO for Webots visual LC ([REPORT.md](gslam_visual_loop_a2/REPORT.md)) |
+| `gslam_visual_loop_a2b/` | Corrected visual PnP seed/convert/gate/inliers; GO for feedback-off Webots visual LC ([REPORT.md](gslam_visual_loop_a2b/REPORT.md)) |
+| `gslam_visual_loop_a2c/` | Mid-route revisit capability audit; activation/candidates/selection block autonomous map-wide LC ([REPORT.md](gslam_visual_loop_a2c/REPORT.md)) |
+| `gslam_arch_a1/` | Dual Global BA ↔ Pose_SLAM ownership/sync audit; A2d front-end-only GO ([REPORT.md](gslam_arch_a1/REPORT.md)) |
+| `gslam_visual_loop_a2d/` | Autonomous mid-route visual front end; GO for feedback-off Webots A3 ([REPORT.md](gslam_visual_loop_a2d/REPORT.md)) |
+| `gslam_kf_z_a1/` | Vertical KF init / altitude audit ([REPORT.md](gslam_kf_z_a1/REPORT.md)) |
+| `gslam_kf_z_a2/` | Hybrid XY-rel / Z-abs implementation ([REPORT.md](gslam_kf_z_a2/REPORT.md)) |
+| `gslam_kf_z_a3/` | Controlled R/H vertical-drift comparison ([REPORT.md](gslam_kf_z_a3/REPORT.md)) |
+| `gslam_kf_z_a5/` | Hybrid promoted to production default ([REPORT.md](gslam_kf_z_a5/REPORT.md)) |
 | `logs/` | Operator/control CSV captures from integrated runs (`CONFB_*.csv`) |
 | `smoke/` | Selected smoke/bridge log snippets from pre-consolidation overlays |
 

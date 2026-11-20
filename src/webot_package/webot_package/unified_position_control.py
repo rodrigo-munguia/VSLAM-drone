@@ -31,7 +31,7 @@ K_POS_XY = 0.45  # 1/s
 K_POS_Z = 0.70  # 1/s
 K_VEL_XY = 2.0  # 1/s
 K_VEL_Z = 2.2  # 1/s
-V_MAX_XY = 3.5  # m/s (R5a production: margin above traj XY 3.0)
+V_MAX_XY = 5.5  # m/s (A3g production: margin above traj XY 5.0)
 V_MAX_Z = 1.5  # m/s
 A_MAX_XY = 2.5  # m/s² (match S2)
 A_MAX_Z = 2.0  # m/s²
@@ -192,9 +192,10 @@ def unified_step(
     return v_sp, a_sp, f_d, omega, sat
 
 
-# Trajectory limits (R5a production). Independent XY/Z; isotropic TRAJ_V_MAX
-# is legacy-only (prefer TRAJ_V_MAX_XY / TRAJ_V_MAX_Z).
-TRAJ_V_MAX_XY = 3.0  # m/s
+# Trajectory limits (A3g production: validated 5 m/s cruise). Independent XY/Z;
+# isotropic TRAJ_V_MAX is legacy-only (prefer TRAJ_V_MAX_XY / TRAJ_V_MAX_Z).
+# Prior 3 m/s: launch --traj-v-max-xy 3.0 --tracker-v-max-xy 3.5
+TRAJ_V_MAX_XY = 5.0  # m/s
 TRAJ_V_MAX_Z = 1.5  # m/s
 TRAJ_V_MAX = TRAJ_V_MAX_XY  # legacy isotropic alias (horizontal)
 TRAJ_A_MAX = 0.8  # m/s²

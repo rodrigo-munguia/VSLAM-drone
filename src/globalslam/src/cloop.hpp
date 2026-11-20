@@ -7,9 +7,11 @@
 #include "globalslam_types.hpp"
 #include "g6b_home_tag_geometry.hpp"
 #include "g6b_home_tag_capture.hpp"
+#include "cloop_visual_retrieve.hpp"
 #include <opencv2/opencv.hpp>
 #include <opencv2/aruco.hpp>
 #include <string>
+#include <vector>
 
 class CLOOP
 {
@@ -68,6 +70,14 @@ class CLOOP
         std::vector<int> Get_n_visually_linked_kf(int idx_kf, int min_strenght);
 
         void Get_kf_list_from_uncertainty(KEYFRAME &kf_cl,std::vector<int> &idx_nvl_kf);
+
+        /** A2d/A3g: enumerate+match+rank historical visual candidates (no home/unc).
+         *  apply_hist_travel_gate: visual Step only (tag Get_matches passes false). */
+        std::vector<globalslam::cloop_visual_retrieve::RankedCandidate>
+        Collect_ranked_visual_candidates(
+          KEYFRAME & kf_cl, double * t_search_s, int * n_eligible_out = nullptr,
+          int * n_hist_rejected_out = nullptr,
+          bool apply_hist_travel_gate = true);
        
         void Get_matches(KEYFRAME &kf_cl, std::vector<int> &idx_pt_matches, std::vector<cv::Point2d> &image_points ,int &idx_kf_matched);
         

@@ -55,6 +55,12 @@
     Init_number_candidate_points_per_kf: 1000
     Init_min_distance_to_previous_mapped_features: 1
     Init_min_depth_to_consider: 0.2
+    # Relative KF pose init (CONFIG-A1 default ON). Absolute: set false or
+    # GSLAM_INIT_RELATIVE_KF_POSE=0.
+    Init_relative_kf_pose_enable: true
+    # KF-Z-A5 hybrid XY-rel / Z-abs admit (production default ON).
+    # Requires relative ON. Full-relative: false or GSLAM_INIT_HYBRID_KF_Z_ABS=0
+    Init_hybrid_kf_z_absolute_enable: true
     VM_max_inov_error: 30
     VG_img_search_margin: 15
     Delete_min_kf_matched_for_keep_anchor: 3
@@ -82,8 +88,14 @@
     CL_clo_sigma_kf_xy: 0.0005
     CL_clo_sigma_kf_z: 0.005
     CL_update_z: false
-    CL_use_robot_uncertainty: true
-    CL_use_only_home_kf: true
+    # A2d visual retrieval: no uncertainty/home filters (drift-safe mid-route).
+    # Legacy Get_kf_list_from_uncertainty still gated by these if re-enabled.
+    CL_use_robot_uncertainty: false
+    CL_use_only_home_kf: false
+    # Bound PnP verifies per visual Step (ranked fallback).
+    CL_visual_max_pnp_attempts: 3
+    # A3g: min KF-chain traveled distance [m] for visual LC (not Euclid / travel_dis)
+    CL_min_historical_travel_m: 200.0
     CL_tag_max_xy_dis: 6.0
     CL_tag_max_xy_dis_px: 90
 

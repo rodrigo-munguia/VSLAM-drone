@@ -298,6 +298,10 @@
     # Override off: Init_birth_reproj_gate_enable:=false or GSLAM_INIT_BIRTH_REPROJ_GATE_ENABLE=0
     Init_birth_reproj_gate_enable: true
     Init_birth_reproj_max_rms_px: 20.0
+    # Relative KF pose init (BA-D6 / CONFIG-A1). Default ON for launch2/launch4.
+    # Absolute admit: Init_relative_kf_pose_enable:=false or GSLAM_INIT_RELATIVE_KF_POSE=0
+    Init_relative_kf_pose_enable: true
+    Init_hybrid_kf_z_absolute_enable: true
     # visual match
     VM_max_inov_error: 30
     # Visibility graph
@@ -352,8 +356,11 @@
     CL_clo_sigma_kf_z: 0.005
     CL_update_z: false
     # Use robot uncertainty in x-y pose for looking for previous mapped areas
-    CL_use_robot_uncertainty: true
-    CL_use_only_home_kf: true
+    CL_use_robot_uncertainty: false
+    CL_use_only_home_kf: false
+    CL_visual_max_pnp_attempts: 3
+    # A3g: min KF-chain traveled distance [m] for visual LC (not Euclid / travel_dis)
+    CL_min_historical_travel_m: 200.0
     # For using an Aruco tag for CL  
     CL_tag_max_xy_dis: 6.0
     CL_tag_max_xy_dis_px: 90

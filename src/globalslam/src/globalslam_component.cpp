@@ -136,7 +136,7 @@ Gslam::Gslam(const rclcpp::NodeOptions & options)
     this->get_logger(),
     "Gslam ready: G6d matrix [%s] estimator_reference=%s "
     "accept_missing_source_stamp=%d public_frame=%s "
-    "birth_reproj_gate=%d max_rms_px=%.3f relative_kf_pose=%d "
+    "birth_reproj_gate=%d max_rms_px=%.3f relative_kf_pose=%d hybrid_z_abs=%d "
     "Path/cloud body-origin keyframes + sparse landmarks "
     "(GS restart does not replay past KFs — prior global map/home not reconstructed). "
     "Enable processing: ros2 service call /gslam/enable std_srvs/srv/SetBool \"{data: true}\"",
@@ -146,7 +146,8 @@ Gslam::Gslam(const rclcpp::NodeOptions & options)
     public_frame_id_.c_str(),
     PAR.Init_birth_reproj_gate_enable ? 1 : 0,
     PAR.Init_birth_reproj_max_rms_px,
-    PAR.Init_relative_kf_pose_enable ? 1 : 0);
+    PAR.Init_relative_kf_pose_enable ? 1 : 0,
+    PAR.Init_hybrid_kf_z_absolute_enable ? 1 : 0);
 }
 
 Gslam::~Gslam()
