@@ -5,7 +5,6 @@
 #include <stdlib.h>
 #include <opencv2/opencv.hpp>
 #include "nanoflann.hpp"
-#include "range-tree/ranget.h"
 
 using namespace std;
 using namespace nanoflann;
@@ -65,8 +64,6 @@ void generatePointCloud(PointCloud<T> &point, vector<cv::KeyPoint> keyPoints);
 
 
 vector<cv::KeyPoint> KdTree(vector<cv::KeyPoint> keyPoints, int numRetPoints,float tolerance,int cols,int rows);
-
-vector<cv::KeyPoint> RangeTree(vector<cv::KeyPoint> keyPoints, int numRetPoints,float tolerance, int cols, int rows);
 
 vector<cv::KeyPoint> Ssc(vector<cv::KeyPoint> keyPoints, int numRetPoints,float tolerance, int cols, int rows);
 

@@ -186,69 +186,6 @@ vector<cv::KeyPoint> KdTree(vector<cv::KeyPoint> keyPoints, int numRetPoints,flo
     return kp;
 }
 
-vector<cv::KeyPoint> RangeTree(vector<cv::KeyPoint> keyPoints, int numRetPoints,float tolerance, int cols, int rows)
-{
-    // several temp expression variables to simplify solution equation
-    int exp1 = rows + cols + 2*numRetPoints;
-    long long exp2 = ((long long) 4*cols + (long long)4*numRetPoints + (long long)4*rows*numRetPoints + (long long)rows*rows + (long long) cols*cols - (long long)2*rows*cols + (long long)4*rows*cols*numRetPoints);
-    double exp3 = sqrt(exp2);
-    double exp4 = numRetPoints - 1;
-
-    double sol1 = -round((exp1+exp3)/exp4); // first solution
-    double sol2 = -round((exp1-exp3)/exp4); // second solution
-
-    int high = (sol1>sol2)? sol1 : sol2; //binary search range initialization with positive solution
-    int low = floor(sqrt((double)keyPoints.size()/numRetPoints));
-
-    rangetree<u16, u16> treeANMS(keyPoints.size(), keyPoints.size()); //creating range tree with keypoints
-    for (unsigned int i = 0; i < keyPoints.size(); i++) treeANMS.add(keyPoints[i].pt.x, keyPoints[i].pt.y, (u16 *)(intptr_t)i);
-    treeANMS.finalize();
-
-    bool complete = false;
-    unsigned int K = numRetPoints; unsigned int Kmin = round(K-(K*tolerance)); unsigned int Kmax = round(K+(K*tolerance));
-    vector<int> ResultVec;
-    int width;
-    int prevwidth = -1;
-
-    vector<int> result; result.reserve(keyPoints.size());
-    while(!complete){
-        vector<bool> Included(keyPoints.size(),true);
-        width = low+(high-low)/2;
-        if (width == prevwidth || low>high) { //needed to reassure the same width is not repeated again
-            ResultVec = result; //return the keypoints from the previous iteration
-            break;
-        }
-        result.clear();
-
-        for (unsigned int i=0;i<keyPoints.size();++i){
-            if (Included[i]==true){
-                Included[i] = false;
-                result.push_back(i);
-                int minx = keyPoints[i].pt.x-width; int maxx = keyPoints[i].pt.x+width; //defining square boundaries around the point
-                int miny= keyPoints[i].pt.y-width; int maxy= keyPoints[i].pt.y+width;
-                if (minx<0) minx = 0; if (miny<0) miny = 0;
-
-                std::vector<u16 *> *he = treeANMS.search(minx, maxx, miny, maxy);
-                for (unsigned int j=0; j<he->size();j++) if (Included[(unsigned long long int) (*he)[j]]) Included[(unsigned long long int) (*he)[j]] = false;
-                delete he;
-                he = NULL;
-            }
-        }
-        if (result.size()>=Kmin && result.size()<=Kmax){ //solution found
-                ResultVec = result;
-                complete = true;
-        }
-        else if (result.size()<Kmin) high = width-1; //update binary search range
-        else low = width+1;
-        prevwidth = width;
-    }
-    // retrieve final keypoints
-    vector<cv::KeyPoint> kp;
-    for (unsigned int i = 0; i<ResultVec.size(); i++) kp.push_back(keyPoints[ResultVec[i]]);
-
-    return kp;
-}
-
 vector<cv::KeyPoint> Ssc(vector<cv::KeyPoint> keyPoints, int numRetPoints,float tolerance, int cols, int rows){
     // several temp expression variables to simplify solution equation
     int exp1 = rows + cols + 2*numRetPoints;
