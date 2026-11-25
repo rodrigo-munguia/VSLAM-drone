@@ -17,8 +17,13 @@ data_files.append(('share/' + package_name + '/worlds', [
     'worlds/earth_aerial_probe_20.wbt',
     'worlds/earth_aerial_probe_50.wbt',
     'worlds/earth_aerial_probe_100.wbt',
+    'worlds/earth_aerial_a3d0_300.wbt',
+    'worlds/earth_aerial_a3d0_380.wbt',
+    'worlds/earth_aerial_a3d0_380_extended.wbt',
     'worlds/earth_aerial_texture.jpg',
     'worlds/earth_aerial_texture.PROVENANCE.txt',
+    'worlds/earth_aerial_texture_1000m.jpg',
+    'worlds/earth_aerial_texture_1000m.PROVENANCE.txt',
     'worlds/marker23.png',
 ]))
 data_files.append(('share/' + package_name + '/resource', [

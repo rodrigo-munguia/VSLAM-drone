@@ -4,9 +4,11 @@
 #include <armadillo>
 #include "parameters.hpp"
 #include "gmap_relative_kf_init.hpp"
+#include "gmap_visual_sync.hpp"
 #include "../../common/Vision/vision.hpp"
 #include "globalslam_types.hpp"
 #include <opencv2/opencv.hpp>
+#include <cstdint>
 
 class GMAP
 {
@@ -73,6 +75,11 @@ class GMAP
         // BA-D6: EKF-at-admission camera pose of the previous KF (for relative init).
         bool have_prev_ekf_cam_pose_{false};
         gmap_relative_kf_init::CamPose prev_ekf_cam_pose_{};
+
+        // LC-CONSISTENCY-A3: discrete sync admit gate (Open/Suspend/Bound).
+        gmap_visual_sync::AdmitMode sync_admit_mode_{
+          gmap_visual_sync::AdmitMode::Open};
+        uint64_t sync_boundary_keyframe_id_{0};
     
     public:
         void InitGmap();
@@ -85,6 +92,29 @@ class GMAP
         void Set_GlobalMap(GLOBAL_MAP &Gmap_c);
 
         arma::vec::fixed<3>  Get_delta_pos();
+
+        /** Suspend map admits while Local feedback is in flight. */
+        void Sync_admit_suspend();
+        /** Open admits after definitive non-application (no rebase). */
+        void Sync_admit_open();
+        /**
+         * Confirmed Local apply: rebase prev_ekf XY once and bind watermark to
+         * last Local-generated keyframe_id (pre-correction generation floor).
+         */
+        void Sync_on_local_applied(double dx, double dy, uint64_t last_generated_kf_id);
+        gmap_visual_sync::AdmitMode Sync_admit_mode() const
+        {
+          return sync_admit_mode_;
+        }
+        uint64_t Sync_boundary_keyframe_id() const
+        {
+          return sync_boundary_keyframe_id_;
+        }
+        bool Have_prev_ekf_cam_pose() const { return have_prev_ekf_cam_pose_; }
+        gmap_relative_kf_init::CamPose Prev_ekf_cam_pose() const
+        {
+          return prev_ekf_cam_pose_;
+        }
 
         void Get_birth_gate_counts(
           int64_t & attempts, int64_t & accepted, int64_t & rejected) const

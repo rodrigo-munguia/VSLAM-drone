@@ -1,9 +1,11 @@
 #!/usr/bin/env python3
-"""G6b: verify launch-file constraints without starting Webots.
+"""G6b / A4.1: verify launch-file constraints without starting Webots.
 
 Checks that quad_experiment.launch.py rejects:
   - global_corrections without globalslam
-  - Coordinate_mode absent_ok / offline_bypass when corrections enabled
+
+A4.1: Local feedback is estimator-only (Coordinate_mode=offline_bypass);
+CoordPause is not required for Apply_*=true.
 
 Success-path banners are asserted by static inspection of the launch script
 (avoids leaving component_container orphans when process signals are blocked).
@@ -71,7 +73,7 @@ def main() -> int:
     for needle, label, blob in [
         ('resolve_gslam_g6d_params', 'G6d precedence helper', src),
         ("default_value=''", 'global_corrections omit=YAML', src),
-        ('G6d: coordinated Local feedback ENABLED', 'corrections banner', src),
+        ('G6d: estimator-only Local feedback ENABLED', 'corrections banner', src),
         ('Local feedback OFF', 'viz banner text', src),
         ('Apply_ba_corrections', 'G6d apply_ba', src),
         ('Enable_visual_loop_closure', 'G6d enable_visual', src),
@@ -79,18 +81,14 @@ def main() -> int:
         ('no simultaneous loop-source arbitration', 'reject dual loop', policy_src),
         ('Contradictory Global SLAM correction options', 'master conflict', policy_src),
         ('Omitted overrides must not rewrite YAML', 'omit keeps YAML', policy_src),
+        ('estimator-only', 'A4.1 estimator-only policy', policy_src),
+        ('offline_bypass', 'A4.1 offline_bypass for feedback', policy_src),
     ]:
         if needle not in blob:
             failures.append(f'static: missing {label!r} ({needle!r})')
             print(f'  missing {label}')
         else:
             print(f'  ok ({label})')
-
-    # Reject absent_ok / offline_bypass when corrections enabled (source-level).
-    if 'absent_ok' not in src or 'offline_bypass' not in src:
-        failures.append('static: missing absent_ok/offline_bypass rejection')
-    else:
-        print('  ok (rejects absent_ok/offline_bypass)')
 
     if failures:
         print('FAIL:')

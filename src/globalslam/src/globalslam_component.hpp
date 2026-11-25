@@ -217,6 +217,30 @@ private:
   bool gmap_get_log_flag{false};
   bool cloop_get_log_flag{false};
   bool loop_closed_flag{false};
+
+  /**
+   * LC-CONSISTENCY-A3: GMAP is stack-local to GMAP_LOOP; sync commands are
+   * queued here and drained on the GMAP worker (mutex_visual_sync_).
+   */
+  enum class VisualSyncCmdKind : uint8_t
+  {
+    None = 0,
+    Suspend = 1,
+    Open = 2,
+    Applied = 3,
+  };
+  struct VisualSyncCmd
+  {
+    VisualSyncCmdKind kind{VisualSyncCmdKind::None};
+    double dx{0.0};
+    double dy{0.0};
+    uint64_t watermark{0};
+    uint64_t correction_id{0};
+  };
+  std::mutex mutex_visual_sync_;
+  VisualSyncCmd visual_sync_cmd_{};
+  void Queue_visual_sync_cmd(const VisualSyncCmd & cmd);
+  void Drain_visual_sync_cmd(GMAP & gmap);
   /** Legacy end-of-RecHome: finalize capture + stamp n_kf_home ('u'). */
   bool rechome_flag{false};
   /** Start RecHome capture window ('b'). */

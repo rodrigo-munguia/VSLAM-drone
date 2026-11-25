@@ -486,6 +486,8 @@ void EKFslam::EKF_LOOP()
                    pos_update.result_applied = false;
                    pos_update.applied_delta.zeros();
                    pos_update.outcome = "cancelled";
+                   pos_update.result_last_generated_kf_id =
+                     ekf.last_generated_keyframe_id();
                    pos_update.result_ready = true;
                    cv_pos_update_.notify_all();
                  } else {
@@ -497,6 +499,8 @@ void EKFslam::EKF_LOOP()
                    pos_update.result_applied = false;
                    pos_update.applied_delta.zeros();
                    pos_update.outcome = "reset_before_apply";
+                   pos_update.result_last_generated_kf_id =
+                     ekf.last_generated_keyframe_id();
                    pos_update.result_ready = true;
                    cv_pos_update_.notify_all();
                    RCLCPP_WARN(
@@ -512,8 +516,21 @@ void EKFslam::EKF_LOOP()
                    pos_update.applied_delta[1] = applied.applied_dy;
                    pos_update.applied_delta[2] = applied.applied_dz;
                    pos_update.outcome = applied.applied ? "applied" : "gated_noop";
+                   // Watermark after mutation: includes any KF stamped this cycle.
+                   pos_update.result_last_generated_kf_id =
+                     ekf.last_generated_keyframe_id();
                    pos_update.result_ready = true;
                    cv_pos_update_.notify_all();
+                   if (applied.applied) {
+                     RCLCPP_INFO(
+                       this->get_logger(),
+                       "LOCAL_APPLIED correction_id=%llu d=[%.4f %.4f %.4f] "
+                       "last_gen_kf=%llu",
+                       static_cast<unsigned long long>(view.correction_id),
+                       applied.applied_dx, applied.applied_dy, applied.applied_dz,
+                       static_cast<unsigned long long>(
+                         pos_update.result_last_generated_kf_id));
+                   }
                    // Publish corrected snapshot in this cycle (path keeps history;
                    // past poses are not retroactively optimized — jump is expected).
                    if (applied.applied) {
@@ -1079,6 +1096,7 @@ void EKFslam::Handle_pos_update_service(
   response->applied_delta_z = 0.0;
   response->outcome = "rejected";
   response->reason.clear();
+  response->last_generated_keyframe_id = 0;
 
   PosUpdateRequestView view;
   view.delta_x = request->delta_x;
@@ -1209,6 +1227,7 @@ void EKFslam::Handle_pos_update_service(
   response->applied_delta_z = pos_update.applied_delta[2];
   response->outcome = pos_update.outcome;
   response->reason = pos_update.outcome == "applied" ? "" : pos_update.outcome;
+  response->last_generated_keyframe_id = pos_update.result_last_generated_kf_id;
 }
 
 //-----------------------------------------------------------------------------------------------------------------------------

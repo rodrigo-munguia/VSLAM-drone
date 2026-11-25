@@ -648,11 +648,16 @@ publisher defeats it (operator flight keys can). Do not retune gains here.
 ```
 Parameters: `Enable_global_ba` / `Enable_tag_loop_closure` /
 `Enable_visual_loop_closure` vs `Apply_ba_corrections` /
-`Apply_tag_loop_corrections` / `Apply_visual_loop_corrections` (all Apply
-default **false**). Tag+visual both enabled is rejected. Any Local feedback
-forces `Coordinate_mode=required`; reject `absent_ok`/`offline_bypass`.
-Informational `/gslam/global_loop_committed` is independent of Apply_*.
-See `docs/evidence/g6b/G6d_CLOSEOUT.md`.
+`Apply_tag_loop_corrections` / `Apply_visual_loop_corrections`.
+Node `declare_parameter` defaults keep all Apply_* **false**. Production
+TFA300L YAML (`quad_params_no_velocity_tfa300l.yaml`,
+`quad_params_a3d0_tfa300l.yaml`) enables visual loop processing and
+`Apply_visual_loop_corrections` (MAP-MGMT-A3.2); BA Apply stays false; tag
+processing/Apply stay false. Disable feedback with
+`--apply-visual-loop-corrections false`. Tag+visual both enabled is rejected.
+Any Local feedback forces `Coordinate_mode=required`; reject
+`absent_ok`/`offline_bypass`. Informational `/gslam/global_loop_committed` is
+independent of Apply_*. See `docs/evidence/g6b/G6d_CLOSEOUT.md`.
 
 ### Home-tag close-loop (active default path)
 - Dictionary: OpenCV `DICT_6X6_250`; marker texture `marker23.png` (ID 23).

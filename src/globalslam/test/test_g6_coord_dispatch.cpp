@@ -58,3 +58,33 @@ TEST(G6CoordDispatch, ParseMode)
   EXPECT_EQ(parse_coord_mode("required"), CoordMode::Required);
   EXPECT_EQ(parse_coord_mode("nope"), CoordMode::Required);
 }
+
+TEST(G6CoordDispatch, EstimatorOnlyNeverNeedsPause)
+{
+  using globalslam::g6_coord::decide_estimator_only_dispatch;
+  using globalslam::g6_coord::requires_control_pause;
+  auto d = decide_estimator_only_dispatch(true);
+  EXPECT_TRUE(d.may_dispatch);
+  EXPECT_FALSE(d.need_pause);
+  EXPECT_FALSE(requires_control_pause(d));
+  EXPECT_EQ(d.reason, "offline_bypass");
+  // Even if control were present, estimator-only must not request pause.
+  auto required = decide_dispatch(true, CoordMode::Required, true, false);
+  EXPECT_TRUE(requires_control_pause(required));
+  EXPECT_FALSE(requires_control_pause(decide_estimator_only_dispatch(true)));
+}
+
+TEST(G6CoordDispatch, EstimatorOnlyRespectsCorrectionsDisabled)
+{
+  using globalslam::g6_coord::decide_estimator_only_dispatch;
+  auto d = decide_estimator_only_dispatch(false);
+  EXPECT_FALSE(d.may_dispatch);
+  EXPECT_FALSE(d.need_pause);
+}
+
+TEST(G6CoordDispatch, LegacyCWouldFireWithoutCoordinationButA41DisablesPath)
+{
+  // Historical helper still documents when 'c' would fire; production A4.1
+  // Send_local_slam_pos_update never calls Send_control_loop_closed_signal.
+  EXPECT_TRUE(use_legacy_control_c(false, true, true));
+}

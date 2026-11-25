@@ -16,8 +16,8 @@ G6d precedence (explicit CLI > YAML > node declare_parameter default):
   enable_global_ba / enable_tag_loop_closure / enable_visual_loop_closure
   apply_ba_corrections / apply_tag_loop_corrections / apply_visual_loop_corrections
   Empty launch args keep YAML (do not hard-overwrite). Tag+visual both on
-  is rejected. Any effective Apply_*=true forces Coordinate_mode=required
-  (rejects absent_ok/offline_bypass). No uncoordinated fallback.
+  is rejected. LC-CONSISTENCY-A4.1: Apply_*=true uses estimator-only Local
+  feedback (Coordinate_mode=offline_bypass); no CoordPause / plan pause.
 
 Compatibility master:
   global_corrections:=true|false|''   empty = leave YAML Apply_global_corrections
@@ -287,7 +287,8 @@ def _build(context, *args, **kwargs):
             apply_vis=apply_vis,
             global_corrections=global_corrections,
         )
-        needs_coordination = bool(resolved.pop('_needs_coordination'))
+        resolved.pop('_needs_coordination', None)
+        any_apply = bool(resolved.pop('_needs_local_feedback', False))
         gslam_params = dict(gslam_yaml)
         gslam_params.update(resolved)
         gslam_params['use_sim_time'] = True
@@ -297,9 +298,7 @@ def _build(context, *args, **kwargs):
         gslam_params['Processing_start_enabled'] = True
         _assert_globalslam_calibration(lslam_params, gslam_params)
 
-        if needs_coordination:
-            gslam_params.setdefault('Coordinate_feedback_barrier_timeout_ms', 5000)
-            gslam_params.setdefault('Coordinate_pause_timeout_ms', 3000)
+        # A4.1: Local feedback is estimator-only — no CoordPause timeouts required.
 
         eff_ba = bool(gslam_params['Enable_global_ba'])
         eff_tag = bool(gslam_params['Enable_tag_loop_closure'])
@@ -312,7 +311,6 @@ def _build(context, *args, **kwargs):
             f'ba={int(eff_ba)}/fb={int(bool(gslam_params.get("Apply_ba_corrections")))} '
             f'tag={int(eff_tag)}/fb={int(bool(gslam_params.get("Apply_tag_loop_corrections")))} '
             f'vis={int(eff_vis)}/fb={int(bool(gslam_params.get("Apply_visual_loop_corrections")))}')
-        any_apply = needs_coordination
 
         gslam_remaps = [
             ('Kf_topic', 'Kf_topic'),
@@ -330,11 +328,11 @@ def _build(context, *args, **kwargs):
             remappings=gslam_remaps))
         if any_apply:
             extra_actions.append(LogInfo(msg=[
-                'G6d: coordinated Local feedback ENABLED. '
-                f'matrix [{matrix}] Coordinate_mode=required nav_feedback={fb_mode}. '
-                'Pause≠hover. No uncoordinated fallback. Topics: /gslam/global_*, '
-                '/gslam/global_loop_committed, /EKFslam/correction_applied, '
-                '/control/correction_feedback_accepted.'
+                'G6d: estimator-only Local feedback ENABLED (A4.1). '
+                f'matrix [{matrix}] Coordinate_mode=offline_bypass '
+                f'nav_feedback={fb_mode}. No CoordPause / plan pause for sync. '
+                'Topics: /gslam/global_*, /gslam/global_loop_committed, '
+                '/EKFslam/correction_applied.'
             ]))
         else:
             extra_actions.append(LogInfo(msg=[

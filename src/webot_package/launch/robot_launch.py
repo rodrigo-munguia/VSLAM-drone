@@ -123,8 +123,8 @@ def generate_launch_description():
     return LaunchDescription([
         DeclareLaunchArgument(
             'world',
-            default_value='mars.wbt',
-            description='World file under webot_package/worlds',
+            default_value='earth_aerial_a3d0_380_extended.wbt',
+            description='World file under webot_package/worlds (A3.1 extended 1000x1000 m default)',
         ),
         DeclareLaunchArgument(
             'traj_v_max',

@@ -1,5 +1,8 @@
 #include "gmap.hpp"
 #include "gmap_landmark_audit_log.hpp"
+#include "gmap_map_mgmt_audit.hpp"
+
+#include <chrono>
 
 
 
@@ -10,6 +13,7 @@ void matchFeatures3(const cv::Mat &query, const cv::Mat &target,std::vector<cv::
 // Rodrigo M. 2022
 void GMAP::Match_Gmap_points_into_new_KF()
 {
+  const auto match_t0 = std::chrono::steady_clock::now();
   int idx_KF = Gmap.KeyFDATA.size()-1;
 
   vector<cv::KeyPoint> keyPoints_KF;
@@ -21,6 +25,9 @@ void GMAP::Match_Gmap_points_into_new_KF()
   // store all keypoints and descriptors for the current kf (this will be used later for matching)
   Gmap.KeyFDATA[idx_KF].keyPoints_all = keyPoints_KF;
   Gmap.KeyFDATA[idx_KF].Descriptors_all = Descriptors_KF;
+  gmap_map_mgmt_audit::note_features(
+    static_cast<int>(keyPoints_KF.size()),
+    Descriptors_KF.empty() ? 0 : Descriptors_KF.rows);
 
   cv::Mat Descriptors_A; // For storing descriptors of candidate anchors (map points)
   std::vector<int64> Idx_candidate_A;  // index candidate anchors
@@ -94,7 +101,23 @@ void GMAP::Match_Gmap_points_into_new_KF()
               } 
         
           }
-    } // if (Predicted_projections.size() > 0)     
+    } // if (Predicted_projections.size() > 0)
+
+  if (gmap_map_mgmt_audit::enabled()) {
+    std::vector<cv::Point2f> uv_matched;
+    uv_matched.reserve(Gmap.KeyFDATA[idx_KF].UV_Matched_points.size());
+    for (const auto & p : Gmap.KeyFDATA[idx_KF].UV_Matched_points) {
+      uv_matched.emplace_back(static_cast<float>(p.x), static_cast<float>(p.y));
+    }
+    gmap_map_mgmt_audit::census_association(
+      Gmap, idx_KF, idx_kf_min_ref_for_search_matches, cam_parameters,
+      PAR.VM_max_inov_error,
+      static_cast<int>(Gmap.KeyFDATA[idx_KF].Idx_Matched_points.size()),
+      uv_matched);
+    const auto match_t1 = std::chrono::steady_clock::now();
+    gmap_map_mgmt_audit::note_match_time(
+      std::chrono::duration<double>(match_t1 - match_t0).count());
+  }
 
 };
 

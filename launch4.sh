@@ -4,12 +4,12 @@
 # Thin wrapper around ./launch2.sh. Defaults:
 #   --params-file <repo>/config/quad_params_no_velocity_tfa300l.yaml
 #   --range-sensor tfa300l
-#   --world earth_aerial.wbt
+#   --world earth_aerial_a3d0_380_extended.wbt  (A3.1: 1000x1000 m; original a3d0_380 via --world)
 #
 # Equivalent intent to:
 #   ./launch3.sh --range-sensor tfa300l \
 #     --params-file "$PWD/config/quad_params_no_velocity_tfa300l.yaml" \
-#     --world earth_aerial.wbt
+#     --world earth_aerial_a3d0_380_extended.wbt
 #
 # Explicit --params-file / --range-sensor / --world from the caller override the
 # defaults (no duplicate flags). Inconsistent combinations are rejected.
@@ -25,7 +25,7 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 LAUNCH2="${SCRIPT_DIR}/launch2.sh"
 DEFAULT_PARAMS="${SCRIPT_DIR}/config/quad_params_no_velocity_tfa300l.yaml"
 DEFAULT_RANGE_SENSOR="tfa300l"
-DEFAULT_WORLD="earth_aerial.wbt"
+DEFAULT_WORLD="earth_aerial_a3d0_380_extended.wbt"
 
 if [[ ! -x "$LAUNCH2" && ! -f "$LAUNCH2" ]]; then
   echo "error: launch2.sh not found at $LAUNCH2" >&2

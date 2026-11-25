@@ -278,6 +278,14 @@ if(BUILD_TESTING)
       ament_target_dependencies(test_gmap_relative_kf_init OpenCV)
       target_link_libraries(test_gmap_relative_kf_init ${BLAS_LIBRARIES} ${LAPACK_LIBRARIES})
     endif()
+    # GSLAM-LC-CONSISTENCY-A3: alignment δ_L + rebase + admit watermark.
+    ament_add_gtest(test_gmap_visual_sync
+      test/test_gmap_visual_sync.cpp)
+    if(TARGET test_gmap_visual_sync)
+      target_include_directories(test_gmap_visual_sync PRIVATE src ../common)
+      ament_target_dependencies(test_gmap_visual_sync OpenCV)
+      target_link_libraries(test_gmap_visual_sync ${BLAS_LIBRARIES} ${LAPACK_LIBRARIES})
+    endif()
     # GSLAM-VISUAL-LOOP-A2b: production cloop_visual_pnp::solve_and_accept.
     ament_add_gtest(test_visual_loop_a2_pnp_geometry
       test/test_visual_loop_a2_pnp_geometry.cpp

@@ -255,13 +255,18 @@
 # Global slam component parameters     
 /gslam:
   ros__parameters:
-    # G6d: independent processing vs Local feedback (all feedback default off).
+    # G6d: independent processing vs Local feedback.
+    # MAP-MGMT-A3.2: visual loop closure is the default loop source; committed
+    # visual-loop corrections apply to LocalSLAM. BA feedback stays OFF.
+    # Tag and visual processing remain mutually exclusive.
+    # Disable feedback: Apply_visual_loop_corrections:=false or
+    #   ./launch4.sh --apply-visual-loop-corrections false
     Enable_global_ba: true
-    Enable_tag_loop_closure: true
-    Enable_visual_loop_closure: false
+    Enable_tag_loop_closure: false
+    Enable_visual_loop_closure: true
     Apply_ba_corrections: false
-    Apply_tag_loop_corrections: true
-    Apply_visual_loop_corrections: false
+    Apply_tag_loop_corrections: false
+    Apply_visual_loop_corrections: true
     # Compatibility master: launch --global-corrections true forces Apply_* for
     # enabled sources only (never enables visual processing by itself).
     Apply_global_corrections: false

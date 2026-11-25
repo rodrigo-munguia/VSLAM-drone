@@ -188,6 +188,12 @@ class EKF
         slam_identity::UuidBytes reference_session_id() const { return ref_session_id_; }
         uint64_t reference_epoch_id() const { return ref_epoch_id_; }
 
+        /** Highest assigned keyframe_id this epoch (0 if none). LC-CONSISTENCY-A3. */
+        uint64_t last_generated_keyframe_id() const
+        {
+          return next_keyframe_id_ > 1 ? (next_keyframe_id_ - 1) : 0;
+        }
+
 private:
         slam_identity::UuidBytes ref_session_id_{slam_identity::nil_uuid()};
         uint64_t ref_epoch_id_{0};

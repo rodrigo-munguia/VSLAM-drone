@@ -84,7 +84,7 @@ Usage: ./launch2.sh [options]
                              Per-source Local SLAM feedback. Omitted = YAML
                              (shipped: all false). Feedback requires its
                              source processing. Effective Apply_*=true →
-                             Coordinate_mode=required.
+                             estimator-only Local feedback (A4.1; no CoordPause).
   --slam-feedback true|false Override control Slam_feedback (nav pose; NOT corrections).
                              Omitted = YAML.
   --slam-feedback-interface odometry|legacy
@@ -557,7 +557,7 @@ if [[ "$GLOBALSLAM" == "true" ]]; then
   echo "  G6d matrix (CLI>YAML): ba=${EFF_BA}/fb=${EFF_APPLY_BA} tag=${EFF_TAG}/fb=${EFF_APPLY_TAG} vis=${EFF_VIS}/fb=${EFF_APPLY_VIS} master=${MASTER_DESC}"
   echo "  nav_feedback_mode=$FB_DESC (--slam-feedback is NOT Local corrections)"
   if [[ "$ANY_APPLY" == "true" ]]; then
-    echo "  coordinated Local feedback ON (Coordinate_mode=required)"
+    echo "  estimator-only Local feedback ON (Coordinate_mode=offline_bypass; no CoordPause)"
   else
     echo "  Local feedback OFF; Path/cloud on /gslam/global_* ; GlobalLoopCommitted informational"
   fi

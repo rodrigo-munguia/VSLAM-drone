@@ -163,6 +163,8 @@ struct POS_UPDATE
     bool result_applied{false};
     arma::vec::fixed<3> applied_delta;
     std::string outcome;  // applied | gated_noop | reset_before_apply | cancelled | ...
+    /** LC-CONSISTENCY-A3: Local generation watermark at apply outcome. */
+    uint64_t result_last_generated_kf_id{0};
     /** G6a: set under mutex on service timeout while still pending — worker must not mutate. */
     bool cancel_requested{false};
 };

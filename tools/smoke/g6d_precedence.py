@@ -55,8 +55,12 @@ def main() -> int:
     expect(r['Enable_global_ba'] is False, 'omitted enable_ba keeps YAML false', failures)
     expect(r['Apply_tag_loop_corrections'] is True,
            'omitted apply_tag keeps YAML true (not hard-forced false)', failures)
-    expect(r['_needs_coordination'] is True,
-           'YAML Apply_tag implies coordination', failures)
+    expect(r['_needs_coordination'] is False,
+           'A4.1: Local feedback does not require CoordPause', failures)
+    expect(r.get('_needs_local_feedback') is True,
+           'YAML Apply_tag implies local feedback', failures)
+    expect(r['Coordinate_mode'] == 'offline_bypass',
+           'A4.1: feedback forces Coordinate_mode=offline_bypass', failures)
     c = resolve_slam_feedback(yaml_control)
     expect(c['Slam_feedback'] is True, 'omitted slam_feedback keeps YAML true', failures)
     expect(c['Slam_feedback_interface'] == 'legacy',

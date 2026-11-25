@@ -49,6 +49,9 @@ class CLOOP
         std::string last_loop_source_;
         arma::vec::fixed<3> last_committed_camera_;
         bool last_match_ba_refine_ran_{false};
+        /** LC-CONSISTENCY-A3: Local EKF tip used for δ_L (pre-Pose_SLAM). */
+        arma::vec::fixed<3> last_sync_p_l_original_;
+        uint64_t last_sync_keyframe_id_{0};
 
         double travel_dis;
         int n_cloop_intents;

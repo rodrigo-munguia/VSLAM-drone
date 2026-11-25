@@ -1,6 +1,8 @@
 #include "gmap.hpp"
 #include "gmap_ba_d5_log.hpp"
 #include "gmap_relative_kf_init.hpp"
+#include "gmap_visual_sync.hpp"
+#include "gmap_map_mgmt_audit.hpp"
 
 
 //-------------------------------------------
@@ -25,6 +27,8 @@ void GMAP::InitGmap()
     birth_gate_accepted = 0;
     birth_gate_rejected = 0;
     have_prev_ekf_cam_pose_ = false;
+    sync_admit_mode_ = gmap_visual_sync::AdmitMode::Open;
+    sync_boundary_keyframe_id_ = 0;
 
     // initialice store structure for log system statistics            
     store.n_init_anchors = 0;            
@@ -89,6 +93,23 @@ void GMAP::Update()
     // Grow the global map: Add new Keyframes and new Map Point
     auto ct_i = std::chrono::high_resolution_clock::now();  
     bool new_kf = false;
+    // LC-CONSISTENCY-A3: drop incompatible KFs (suspend / pre-sync watermark).
+    {
+      std::vector<KEYFRAME> kept;
+      kept.reserve(Kf_buffer.size());
+      for (auto & kf : Kf_buffer) {
+        if (!gmap_visual_sync::should_admit_keyframe(
+              sync_admit_mode_, sync_boundary_keyframe_id_, kf.keyframe_id))
+        {
+          cout << "gmap-> STALE_KF_REJECTED id=" << kf.keyframe_id
+               << " mode=" << static_cast<int>(sync_admit_mode_)
+               << " watermark=" << sync_boundary_keyframe_id_ << endl;
+          continue;
+        }
+        kept.push_back(std::move(kf));
+      }
+      Kf_buffer.swap(kept);
+    }
     for(int k = 0; k < Kf_buffer.size() ; k++ )
     {   
         // Add new keyframes to the global map
@@ -153,7 +174,24 @@ void GMAP::Update()
 
         prev_ekf_cam_pose_ = T_ekf_curr;
         have_prev_ekf_cam_pose_ = true;
+        // After first valid post-sync admit, watermark is consumed — ordinary
+        // relative init resumes with this T_ekf as the new prev.
+        if (sync_admit_mode_ == gmap_visual_sync::AdmitMode::Bound &&
+          kf_new.keyframe_id > sync_boundary_keyframe_id_)
+        {
+          cout << "gmap-> FIRST_POST_SYNC_KF id=" << kf_new.keyframe_id
+               << " cleared_bound=" << sync_boundary_keyframe_id_ << endl;
+          sync_admit_mode_ = gmap_visual_sync::AdmitMode::Open;
+          sync_boundary_keyframe_id_ = 0;
+        }
         //cout << Kf_buffer[k].frame << endl;
+
+        if (gmap_map_mgmt_audit::enabled()) {
+          gmap_map_mgmt_audit::begin_kf(
+            idx_new, kf_new, static_cast<int>(Gmap.AnchorsDATA.size()),
+            PAR.BA_max_n_previous_kf_for_search_matches,
+            PAR.Init_min_distance_to_previous_mapped_features);
+        }
         
             //------------- Try to match the global map points in the new kf  
             Match_Gmap_points_into_new_KF();
@@ -188,8 +226,15 @@ void GMAP::Update()
                 //cout << Gmap.Vgraph << endl;       
             }
         }
+
+        // Flush early KFs in a multi-KF buffer immediately; keep the last tick
+        // open so Delete/BA stats can attach to the final admitted KF.
+        if (gmap_map_mgmt_audit::enabled() && k + 1 < static_cast<int>(Kf_buffer.size())) {
+          gmap_map_mgmt_audit::flush_kf(Gmap, 0.0);
+        }
         
     }
+    const int n_kf_drained = static_cast<int>(Kf_buffer.size());
     Kf_buffer.clear();
     //--------------------------------------------------------
 
@@ -230,6 +275,12 @@ void GMAP::Update()
      auto elapsed = std::chrono::duration_cast<std::chrono::nanoseconds>(ct_f - ct_i);
      double comp_time_per_step = elapsed.count() * 1e-9;   
      total_comp_time = total_comp_time + comp_time_per_step;
+     if (gmap_map_mgmt_audit::enabled() && new_kf) {
+       const double per_kf =
+         n_kf_drained > 0 ? comp_time_per_step / static_cast<double>(n_kf_drained)
+                          : comp_time_per_step;
+       gmap_map_mgmt_audit::flush_kf(Gmap, per_kf);
+     }
 
      // store statitics 
      if(PAR.Stats){
@@ -247,6 +298,31 @@ void GMAP::Update()
                 
       }   
 
+}
 
+void GMAP::Sync_admit_suspend()
+{
+  sync_admit_mode_ = gmap_visual_sync::AdmitMode::Suspend;
+  sync_boundary_keyframe_id_ = 0;
+  cout << "gmap-> SYNC_ADMIT_SUSPEND" << endl;
+}
 
+void GMAP::Sync_admit_open()
+{
+  sync_admit_mode_ = gmap_visual_sync::AdmitMode::Open;
+  sync_boundary_keyframe_id_ = 0;
+  cout << "gmap-> SYNC_ADMIT_OPEN (no rebase)" << endl;
+}
+
+void GMAP::Sync_on_local_applied(
+  double dx, double dy, uint64_t last_generated_kf_id)
+{
+  if (have_prev_ekf_cam_pose_) {
+    gmap_visual_sync::rebase_cam_pose_xy(prev_ekf_cam_pose_, dx, dy);
+  }
+  sync_admit_mode_ = gmap_visual_sync::AdmitMode::Bound;
+  sync_boundary_keyframe_id_ = last_generated_kf_id;
+  cout << "gmap-> REFERENCE_REBASED dx=" << dx << " dy=" << dy
+       << " watermark=" << last_generated_kf_id
+       << " had_prev=" << (have_prev_ekf_cam_pose_ ? 1 : 0) << endl;
 }

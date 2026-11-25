@@ -79,7 +79,8 @@ void Gslam::setParameters()
   this->declare_parameter<double>("CL_home_capture_max_spread_m", 1.5);
   this->declare_parameter<int>("CL_home_capture_max_samples", 40);
   this->declare_parameter<int>("GM_factor_anchors_sent_to_plot", 1);
-  // G6d: processing defaults preserve prior BA+tag behavior; visual off until validated.
+  // G6d: declare_parameter defaults (YAML/CLI override). Production TFA300L YAML
+  // enables visual LC + Apply_visual; BA Apply stays false (MAP-MGMT-A3.2).
   // All Local SLAM feedback defaults off. Master Apply_global_corrections forces
   // apply_* only for enabled sources (never enables visual processing alone).
   this->declare_parameter<bool>("Enable_global_ba", true);

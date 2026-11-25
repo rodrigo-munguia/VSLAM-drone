@@ -3,6 +3,7 @@
 #include "gmap_landmark_audit_log.hpp"
 #include "gmap_ba_replay_dump.hpp"
 #include "gmap_ba_d5_log.hpp"
+#include "gmap_map_mgmt_audit.hpp"
 
 #include <array>
 #include <chrono>
@@ -308,6 +309,17 @@ void GMAP::Bundle_adjustment()
         gmap_landmark_audit::append_ba_obs_pre_jsonl(
           ba_audit_id, f_valid_update, Gmap, idx_kf_to_optimize, cam_parameters);
       }
+    }
+
+    if (gmap_map_mgmt_audit::enabled()) {
+      int n_obs = 0;
+      for (int idx_kf : idx_kf_to_optimize) {
+        n_obs += static_cast<int>(Gmap.KeyFDATA[idx_kf].Idx_Matched_points.size());
+      }
+      gmap_map_mgmt_audit::note_ba(
+        static_cast<int>(idx_kf_to_optimize.size()),
+        static_cast<int>(idx_points.size()), n_obs, ba_elapsed_s, f_valid_update,
+        static_cast<int>(Gmap.AnchorsDATA.size()));
     }
 
 

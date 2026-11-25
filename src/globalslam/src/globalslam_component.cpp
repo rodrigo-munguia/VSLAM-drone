@@ -225,6 +225,53 @@ void Gslam::request_reset()
   clear_for_reference_change("~/reset or SimpleServ 'i'");
 }
 
+void Gslam::Queue_visual_sync_cmd(const VisualSyncCmd & cmd)
+{
+  std::lock_guard<std::mutex> lock(mutex_visual_sync_);
+  // Applied/Open must not be overwritten by a stale Suspend from an older txn.
+  if (visual_sync_cmd_.kind != VisualSyncCmdKind::None &&
+    cmd.kind == VisualSyncCmdKind::Suspend &&
+    (visual_sync_cmd_.kind == VisualSyncCmdKind::Applied ||
+     visual_sync_cmd_.kind == VisualSyncCmdKind::Open))
+  {
+    return;
+  }
+  visual_sync_cmd_ = cmd;
+}
+
+void Gslam::Drain_visual_sync_cmd(GMAP & gmap)
+{
+  VisualSyncCmd cmd;
+  {
+    std::lock_guard<std::mutex> lock(mutex_visual_sync_);
+    cmd = visual_sync_cmd_;
+    visual_sync_cmd_ = VisualSyncCmd{};
+  }
+  switch (cmd.kind) {
+    case VisualSyncCmdKind::Suspend:
+      gmap.Sync_admit_suspend();
+      break;
+    case VisualSyncCmdKind::Open:
+      gmap.Sync_admit_open();
+      RCLCPP_INFO(
+        this->get_logger(),
+        "SYNC_FAILED / not applied correction_id=%llu — admit open, no rebase",
+        static_cast<unsigned long long>(cmd.correction_id));
+      break;
+    case VisualSyncCmdKind::Applied:
+      gmap.Sync_on_local_applied(cmd.dx, cmd.dy, cmd.watermark);
+      RCLCPP_INFO(
+        this->get_logger(),
+        "SYNC_COMPLETE correction_id=%llu rebased d=[%.4f %.4f] watermark=%llu",
+        static_cast<unsigned long long>(cmd.correction_id),
+        cmd.dx, cmd.dy,
+        static_cast<unsigned long long>(cmd.watermark));
+      break;
+    case VisualSyncCmdKind::None:
+      break;
+  }
+}
+
 void Gslam::GMAP_LOOP()
 {
   GMAP gmap(PAR);
@@ -243,6 +290,9 @@ void Gslam::GMAP_LOOP()
       step_gen = run_ctrl_.reset_generation;
       processing = run_ctrl_.sources.processing_enabled;
     }
+
+    // LC-CONSISTENCY-A3: apply sync gate/rebase before draining new KFs.
+    Drain_visual_sync_cmd(gmap);
 
     {
       // Lock order: run_ctrl → kf → gm (avoid gm→kf deadlock with reset).
@@ -577,6 +627,11 @@ void Gslam::CLOOP_LOOP()
                 (static_cast<uint64_t>(correction_boot_nonce_) << 32) | seq;
               send_correction = true;
               notify_control_on_apply = run_ctrl_.should_emit_control_for(corr_src);
+              // Suspend map admits until Local apply outcome (A3 B2/D).
+              VisualSyncCmd sus;
+              sus.kind = VisualSyncCmdKind::Suspend;
+              sus.correction_id = send_prov.correction_id;
+              Queue_visual_sync_cmd(sus);
             } else if (home_capture_active_ && run_ctrl_.should_emit_for(corr_src)) {
               RCLCPP_INFO(
                 this->get_logger(),
@@ -829,7 +884,7 @@ void Gslam::Send_local_slam_pos_update(
   g6d::CorrectionSource source,
   const CorrectionProvenance & provenance,
   uint64_t dispatch_generation,
-  bool notify_control_on_apply)
+  bool /*notify_control_on_apply*/)
 {
   if (!client_local_slam_pos_update_) {
     return;
@@ -837,57 +892,34 @@ void Gslam::Send_local_slam_pos_update(
   const std::string type = g6d::ls_update_type_for(source);
   const std::string source_name = g6d::source_name(source);
   const bool apply_this = run_ctrl_.should_emit_for(source);
-  // Coordination decision outside worker locks (may wait on control).
-  const auto mode = g6_coord::parse_coord_mode(coordinate_mode_str_);
-  const bool control_ready =
-    client_correction_coord_ && client_correction_coord_->service_is_ready();
-  bool pause_acked = false;
-  bool used_coordination = false;
-  {
-    auto decision = g6_coord::decide_dispatch(
-      apply_this, mode, control_ready, /*pause_acked=*/false);
-    if (!decision.may_dispatch && !decision.need_pause) {
-      RCLCPP_WARN(
-        this->get_logger(),
-        "Dropping %s/%s correction: %s", type.c_str(), source_name.c_str(),
-        decision.reason.c_str());
-      return;
-    }
-    if (decision.need_pause) {
-      used_coordination = true;
-      pause_acked = Prepare_control_pause(provenance, type);
-      // Re-check generation after possible wait.
-      {
-        std::lock_guard<std::mutex> lock_ctrl(mutex_run_ctrl_);
-        if (!run_ctrl_.results_belong_to_generation(dispatch_generation) ||
-          !run_ctrl_.should_emit_for(source))
-        {
-          RCLCPP_WARN(
-            this->get_logger(),
-            "Aborting coordinated correction after pause: generation/gate changed");
-          if (pause_acked) {
-            // Generation change: unknown apply state — do not resume.
-            Release_or_abort_control(provenance, type, false, true, false);
-          }
-          return;
-        }
-      }
-      decision = g6_coord::decide_dispatch(
-        apply_this, mode, control_ready, pause_acked);
-      if (!decision.may_dispatch) {
-        RCLCPP_WARN(
-          this->get_logger(),
-          "Dropping %s/%s correction_id=%llu: %s",
-          type.c_str(), source_name.c_str(),
-          static_cast<unsigned long long>(provenance.correction_id),
-          decision.reason.c_str());
-        if (pause_acked) {
-          // Never dispatched → definite non-application; resume OK.
-          Release_or_abort_control(provenance, type, false, true, true);
-        }
-        return;
-      }
-    }
+
+  // LC-CONSISTENCY-A4.1: SLAM→Local synchronization is estimator-only.
+  // Never CoordPause / quiescence / release / resume / legacy SimpleServ 'c'.
+  // Flight-plan execution continues independently (Webots: Slam_feedback=false).
+  const auto decision = g6_coord::decide_estimator_only_dispatch(apply_this);
+  if (!decision.may_dispatch) {
+    RCLCPP_WARN(
+      this->get_logger(),
+      "Dropping %s/%s correction: %s", type.c_str(), source_name.c_str(),
+      decision.reason.c_str());
+    VisualSyncCmd op;
+    op.kind = VisualSyncCmdKind::Open;
+    op.correction_id = provenance.correction_id;
+    Queue_visual_sync_cmd(op);
+    return;
+  }
+  if (g6_coord::requires_control_pause(decision)) {
+    // Defensive: estimator-only dispatch must never request pause.
+    RCLCPP_ERROR(
+      this->get_logger(),
+      "Internal error: estimator-only dispatch requested control pause "
+      "(correction_id=%llu) — dropping",
+      static_cast<unsigned long long>(provenance.correction_id));
+    VisualSyncCmd op;
+    op.kind = VisualSyncCmdKind::Open;
+    op.correction_id = provenance.correction_id;
+    Queue_visual_sync_cmd(op);
+    return;
   }
 
   // Non-blocking readiness only — never wait under locks. Once
@@ -897,9 +929,10 @@ void Gslam::Send_local_slam_pos_update(
       this->get_logger(), *this->get_clock(), 5000,
       "local_slam_pos_update unavailable; dropping %s/%s correction",
       type.c_str(), source_name.c_str());
-    if (used_coordination && pause_acked) {
-      Release_or_abort_control(provenance, type, false, true, true);
-    }
+    VisualSyncCmd op;
+    op.kind = VisualSyncCmdKind::Open;
+    op.correction_id = provenance.correction_id;
+    Queue_visual_sync_cmd(op);
     return;
   }
   auto request = std::make_shared<interfaces::srv::LSposUpdate::Request>();
@@ -913,24 +946,18 @@ void Gslam::Send_local_slam_pos_update(
   request->keyframe_id = provenance.keyframe_id;
   request->correction_id = provenance.correction_id;
 
-  // G6b.1: register before dispatch so early FeedbackAccepted is latched.
-  if (used_coordination) {
-    std::lock_guard<std::mutex> lock(mutex_corr_barrier_);
-    g6b_fb::register_dispatch(
-      pending_corr_txn_, early_feedback_ids_, provenance.correction_id,
-      dispatch_generation, provenance.epoch_id, type, used_coordination,
-      notify_control_on_apply);
-    pending_corr_provenance_ = provenance;
-  }
+  RCLCPP_INFO(
+    this->get_logger(),
+    "SYNC_REQUEST estimator-only LSposUpdate %s/%s correction_id=%llu "
+    "(no control pause)",
+    type.c_str(), source_name.c_str(),
+    static_cast<unsigned long long>(provenance.correction_id));
 
   using ServiceT = interfaces::srv::LSposUpdate;
   auto callback =
-    [this, dispatch_generation, notify_control_on_apply, type, source,
-      used_coordination, provenance](rclcpp::Client<ServiceT>::SharedFuture future)
+    [this, dispatch_generation, type, source, provenance](
+      rclcpp::Client<ServiceT>::SharedFuture future)
     {
-      // Never block here waiting for FeedbackAccepted — same executor must
-      // deliver that subscription (G6b.1 defect).
-      bool send_legacy_c = false;
       bool applied = false;
       bool unresolved = false;
       bool stale_generation = false;
@@ -961,85 +988,63 @@ void Gslam::Send_local_slam_pos_update(
               RCLCPP_INFO(
                 this->get_logger(),
                 "LSposUpdate %s/%s correction_id=%llu accepted=%d applied=%d "
-                "outcome=%s applied_delta=[%.4f %.4f %.4f]",
+                "outcome=%s applied_delta=[%.4f %.4f %.4f] last_gen_kf=%llu",
                 type.c_str(),
                 g6d::source_name(source),
                 static_cast<unsigned long long>(cid),
                 resp->accepted ? 1 : 0,
                 resp->applied ? 1 : 0,
                 resp->outcome.c_str(),
-                resp->applied_delta_x, resp->applied_delta_y, resp->applied_delta_z);
+                resp->applied_delta_x, resp->applied_delta_y, resp->applied_delta_z,
+                static_cast<unsigned long long>(resp->last_generated_keyframe_id));
               if (resp->outcome == "apply_pending") {
                 unresolved = true;
               }
               applied = resp->applied;
-              send_legacy_c = g6_coord::use_legacy_control_c(
-                  used_coordination, type == "close_loop", applied) &&
-                notify_control_on_apply &&
-                run_ctrl_.should_emit_control_for(source);
+              // A3: rebase/boundary only on definitive applied.
+              // Unknown keeps Suspend — do not Open or rebase. Control unaffected.
+              if (!unresolved) {
+                if (applied) {
+                  VisualSyncCmd ap;
+                  ap.kind = VisualSyncCmdKind::Applied;
+                  ap.dx = resp->applied_delta_x;
+                  ap.dy = resp->applied_delta_y;
+                  ap.watermark = resp->last_generated_keyframe_id;
+                  ap.correction_id = cid;
+                  Queue_visual_sync_cmd(ap);
+                } else {
+                  VisualSyncCmd op;
+                  op.kind = VisualSyncCmdKind::Open;
+                  op.correction_id = cid;
+                  Queue_visual_sync_cmd(op);
+                }
+              } else {
+                RCLCPP_ERROR(
+                  this->get_logger(),
+                  "SYNC unknown apply status correction_id=%llu — "
+                  "admit remains suspended (no rebase); control plan continues",
+                  static_cast<unsigned long long>(cid));
+              }
             }
           }
         }
       }
       if (stale_generation) {
-        if (used_coordination) {
-          Release_or_abort_control(provenance, type, false, true, false);
-          std::lock_guard<std::mutex> lock(mutex_corr_barrier_);
-          g6b_fb::clear_txn(pending_corr_txn_);
-          Cancel_feedback_timeout_timer();
-        }
+        VisualSyncCmd op;
+        op.kind = VisualSyncCmdKind::Open;
+        op.correction_id = cid;
+        Queue_visual_sync_cmd(op);
         return;
       }
-      if (!used_coordination) {
-        if (unresolved) {
-          RCLCPP_ERROR(
-            this->get_logger(),
-            "Correction outcome unresolved (correction_id=%llu)",
-            static_cast<unsigned long long>(cid));
-          return;
-        }
-        if (send_legacy_c) {
-          Send_control_loop_closed_signal();
-        }
+      if (unresolved) {
+        RCLCPP_ERROR(
+          this->get_logger(),
+          "Correction outcome unresolved (correction_id=%llu); "
+          "GMAP admit suspended; control plan continues",
+          static_cast<unsigned long long>(cid));
         return;
       }
-
-      bool ready_release = false;
-      bool arm_timer = false;
-      g6b_fb::TxnPhase phase = g6b_fb::TxnPhase::Idle;
-      {
-        std::lock_guard<std::mutex> lock(mutex_corr_barrier_);
-        if (pending_corr_txn_.correction_id != cid) {
-          RCLCPP_WARN(
-            this->get_logger(),
-            "LSposUpdate response for stale/foreign correction_id=%llu "
-            "(pending=%llu)",
-            static_cast<unsigned long long>(cid),
-            static_cast<unsigned long long>(pending_corr_txn_.correction_id));
-          return;
-        }
-        ready_release = g6b_fb::on_ls_outcome(
-          pending_corr_txn_, applied, unresolved);
-        phase = pending_corr_txn_.phase;
-        arm_timer = (phase == g6b_fb::TxnPhase::AwaitingFeedback);
-        if (unresolved) {
-          RCLCPP_ERROR(
-            this->get_logger(),
-            "Correction outcome unresolved (correction_id=%llu); "
-            "holding coordination pause (no auto-resume)",
-            static_cast<unsigned long long>(cid));
-        }
-      }
-      if (ready_release || phase == g6b_fb::TxnPhase::NotApplied ||
-        phase == g6b_fb::TxnPhase::UnresolvedHold)
-      {
-        Complete_coordinated_txn_locked(
-          provenance, type, dispatch_generation, phase);
-        return;
-      }
-      if (arm_timer) {
-        Arm_feedback_timeout_timer(cid);
-      }
+      (void)applied;
     };
 
   (void)client_local_slam_pos_update_->async_send_request(request, callback);

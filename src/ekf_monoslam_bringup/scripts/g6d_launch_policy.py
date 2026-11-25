@@ -49,7 +49,8 @@ def resolve_gslam_g6d_params(
       node_defaults: declare_parameter defaults used when YAML key absent.
 
     Returns:
-      Dict of resolved G6d keys plus helper `_needs_coordination` (bool).
+      Dict of resolved G6d keys plus helpers `_needs_coordination` (always
+      False after A4.1) and `_needs_local_feedback` (any Apply_* enabled).
     Raises:
       RuntimeError on invalid combinations / master conflicts.
     """
@@ -61,7 +62,7 @@ def resolve_gslam_g6d_params(
         'Apply_tag_loop_corrections': False,
         'Apply_visual_loop_corrections': False,
         'Apply_global_corrections': False,
-        'Coordinate_mode': 'required',
+        'Coordinate_mode': 'offline_bypass',
     }
     if node_defaults:
         nd.update(node_defaults)
@@ -157,22 +158,20 @@ def resolve_gslam_g6d_params(
         raise RuntimeError(
             'Apply_visual_loop_corrections requires Enable_visual_loop_closure')
 
-    needs_coordination = bool(
+    # LC-CONSISTENCY-A4.1: Local correction dispatch is estimator-only (no
+    # CoordPause). Coordinate_mode is retained for YAML compatibility / tests
+    # but is not forced to "required" and does not gate Local feedback launch.
+    needs_local_feedback = bool(
         out['Apply_ba_corrections'] or
         out['Apply_tag_loop_corrections'] or
         out['Apply_visual_loop_corrections'] or
         out['Apply_global_corrections'])
-    out['_needs_coordination'] = needs_coordination
-
-    if needs_coordination:
-        mode = str(out.get('Coordinate_mode', nd['Coordinate_mode'])).lower()
-        if mode in ('absent_ok', 'offline_bypass'):
-            raise RuntimeError(
-                'G6d integrated Local feedback rejects '
-                f'Coordinate_mode={mode!r}. Use Coordinate_mode=required '
-                '(forced). Do not use absent_ok/offline_bypass in '
-                'integrated vehicle-connected mode.')
-        out['Coordinate_mode'] = 'required'
+    out['_needs_coordination'] = False
+    out['_needs_local_feedback'] = needs_local_feedback
+    # Prefer explicit offline_bypass when feedback is enabled so logs match
+    # production Send_local_slam_pos_update (estimator-only).
+    if needs_local_feedback:
+        out['Coordinate_mode'] = 'offline_bypass'
 
     return dict(out)
 

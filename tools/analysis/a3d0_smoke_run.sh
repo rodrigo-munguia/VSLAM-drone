@@ -9,7 +9,7 @@ rm -f /tmp/a3d0_smoke_stop
 
 {
   echo "started_utc=$(date -u +%Y-%m-%dT%H:%M:%SZ)"
-  echo "world=earth_aerial_a3d0_380.wbt"
+  echo "world=earth_aerial_a3d0_380_extended.wbt"
   echo "plan=control_plan_a3d0_smoke.txt"
   echo "expect_spawn_world=(-190,-190,15.75)"
   echo "expect_hop_mission=(20,0,60) -> world≈(-170,-190)"
@@ -17,7 +17,7 @@ rm -f /tmp/a3d0_smoke_stop
 
 (
   cd "$ROOT"
-  ./launch4.sh --world earth_aerial_a3d0_380.wbt \
+  ./launch4.sh --world earth_aerial_a3d0_380_extended.wbt \
     --params-file "$ROOT/config/quad_params_a3d0_tfa300l.yaml" \
     --globalslam true \
     --enable-tag-loop-closure false \

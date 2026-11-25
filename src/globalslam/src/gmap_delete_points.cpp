@@ -2,6 +2,7 @@
 
 #include "gmap.hpp"
 #include "gmap_landmark_audit_log.hpp"
+#include "gmap_map_mgmt_audit.hpp"
 
 
 ///------------------------------------------------------------------------------
@@ -69,6 +70,9 @@ void GMAP::Delete_points(std::vector<std::vector<int>> &kf_vg_info)
             gmap_landmark_audit::log_delete(
               Gmap.AnchorsDATA[i].audit_id, i, n_matches, n_m_tries);
           }
+          gmap_map_mgmt_audit::note_delete(
+            i, Gmap.AnchorsDATA[i].audit_id, Gmap.AnchorsDATA[i].init_KF,
+            n_matches, n_m_tries, static_cast<int>(Gmap.KeyFDATA.size()) - 1);
           Gmap.AnchorsDATA.erase(Gmap.AnchorsDATA.begin()+i);
           if(PAR.Stats)total_delete_anchors++;
          

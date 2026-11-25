@@ -14,9 +14,12 @@
 #   accepted — admitted for processing (not merely "looks valid").
 #   applied  — EKF state was mutated by at least one axis.
 #   applied_delta_* — actual translation applied in internal nav (after gates).
+#   last_generated_keyframe_id — highest Local keyframe_id assigned at response
+#     time (0 if none). LC-CONSISTENCY-A3: Global uses this as the
+#     pre-correction generation watermark (not last Global-admitted id).
 #   outcome:
 #     rejected | applied | gated_noop | busy | localslam_disabled |
-#     not_initialized | reset_before_apply | apply_timeout
+#     not_initialized | reset_before_apply | apply_timeout | apply_pending
 # Do not treat accepted=true alone as application success.
 
 float64 delta_x
@@ -36,3 +39,4 @@ float64 applied_delta_x
 float64 applied_delta_y
 float64 applied_delta_z
 string outcome
+uint64 last_generated_keyframe_id

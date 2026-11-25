@@ -1,0 +1,10 @@
+earth_aerial_texture_1000m.jpg — MAP-MGMT-A3.1 extended ground texture
+Type: REAL USGS NAIP aerial orthophotography (public domain), 2x2 mosaic + original center paste.
+Source service: USGS The National Map — USGSNAIPImagery ImageServer
+Expanded geographic bbox (EPSG:4326): -93.626,42.0255,-93.614,42.0345
+  approx extent ≈ 1000 m × 1000 m (2× original)
+Original center content: earth_aerial_texture.jpg (2048²) pasted into mosaic center with 32 px feather.
+Outer ring: four 2048² NAIP exportImage tiles covering the expanded bbox quadrants.
+Export per tile: 2048×2048 JPEG; final mosaic 4096×4096 (~0.24 m/px, same scale class as original).
+License: U.S. Government work / public domain (USGS NAIP).
+Runtime: local file only.

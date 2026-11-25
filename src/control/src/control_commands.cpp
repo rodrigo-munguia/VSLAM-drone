@@ -416,16 +416,93 @@ namespace control
 
       const double timeout_s =
         (PAR.Unified_traj_timeout_s > 1.0) ? PAR.Unified_traj_timeout_s : 120.0;
-      const auto t0 = std::chrono::steady_clock::now();
+      auto t0 = std::chrono::steady_clock::now();
       bool run = true;
       bool success = false;
+      uint32_t active_req_id = req_id;
+
+      // Helper: (re)issue the same ENU target under a fresh request_id.
+      auto issue_traj = [&](uint32_t id) -> bool {
+        {
+          std::lock_guard<std::mutex> lock(mutex_traj_status_);
+          traj_status_fresh_ = false;
+          traj_status_ = interfaces::msg::UnifiedTrajectoryStatus();
+          traj_status_.request_id = 0;
+          traj_status_.status = interfaces::msg::UnifiedTrajectoryStatus::IDLE;
+        }
+        auto req = std::make_shared<interfaces::srv::UnifiedTrajectory::Request>();
+        req->request_id = id;
+        req->x = gps_x;
+        req->y = gps_y;
+        req->z = gps_z;
+        auto issue_fut = client_unified_traj_->async_send_request(req);
+        if (issue_fut.wait_for(std::chrono::seconds(5)) != std::future_status::ready) {
+          cout << "control-> unified traj request timed out id=" << id << endl;
+          return false;
+        }
+        auto resp = issue_fut.get();
+        if (!resp || !resp->accepted) {
+          cout << "control-> unified traj REJECTED id=" << id
+               << " status=" << (resp ? static_cast<int>(resp->status) : -1)
+               << " msg=" << (resp ? resp->message : "null") << endl;
+          return false;
+        }
+        cout << "control-> unified traj ACCEPTED id=" << id
+             << " msg=" << resp->message << endl;
+        return true;
+      };
 
       while (run && !success) {
         mutex_run_plan.lock();
         run = run_control_plan;
         mutex_run_plan.unlock();
+        // G6b.1 / MAP-MGMT-A3.2: CorrectionCoordinate pause clears
+        // run_control_plan but must not fail the mission waypoint — park and
+        // re-issue the same ENU target after release (mirrors go_point).
         if (!run) {
-          cout << "control-> unified traj cancelled (plan stop) id=" << req_id << endl;
+          const auto kind = g6b_plan::classify_run_clear(
+            run, coord_suppress_cmd_.load());
+          if (kind == g6b_plan::InterruptKind::CoordPause) {
+            cout << "control-> unified traj park for coordination pause id="
+                 << active_req_id << endl;
+            (void)cancel_unified_trajectory();
+            in_plan_command_ = false;
+            cv_coord_quiet_.notify_all();
+            while (true) {
+              const bool still_run = [&]() {
+                std::lock_guard<std::mutex> lk(mutex_run_plan);
+                return run_control_plan;
+              }();
+              const bool suppress = coord_suppress_cmd_.load();
+              if (g6b_plan::should_resume_same_target(still_run, suppress)) {
+                active_req_id = ++unified_traj_req_seq_;
+                in_plan_command_ = true;
+                run = true;
+                t0 = std::chrono::steady_clock::now();
+                cout << "control-> resume go_point_unified after coordination "
+                     << "pause target=(" << gps_x << "," << gps_y << ","
+                     << gps_z << ") id=" << active_req_id << endl;
+                if (!issue_traj(active_req_id)) {
+                  in_plan_command_ = false;
+                  cv_coord_quiet_.notify_all();
+                  return false;
+                }
+                break;
+              }
+              if (!still_run && !suppress) {
+                // Operator stop while parked.
+                in_plan_command_ = false;
+                cv_coord_quiet_.notify_all();
+                cout << "control-> unified traj cancelled (plan stop) id="
+                     << active_req_id << endl;
+                return false;
+              }
+              std::this_thread::sleep_for(std::chrono::milliseconds(50));
+            }
+            continue;
+          }
+          cout << "control-> unified traj cancelled (plan stop) id="
+               << active_req_id << endl;
           (void)cancel_unified_trajectory();
           break;
         }
@@ -438,9 +515,9 @@ namespace control
           fresh = traj_status_fresh_;
         }
 
-        if (fresh && st.request_id == req_id) {
+        if (fresh && st.request_id == active_req_id) {
           if (st.status == kTrajSettled) {
-            cout << "control-> unified SETTLED id=" << req_id
+            cout << "control-> unified SETTLED id=" << active_req_id
                  << " e=(" << st.ex << "," << st.ey << "," << st.ez << ")"
                  << " vh=" << st.vh << " vz=" << st.vz << endl;
             success = true;
@@ -448,10 +525,10 @@ namespace control
           }
           if (st.status == kTrajRejected || st.status == kTrajFailed ||
               st.status == kTrajCancelled) {
-            cout << "control-> unified traj FAILED id=" << req_id
+            // Spurious cancel while still running the plan: fail hard.
+            cout << "control-> unified traj FAILED id=" << active_req_id
                  << " status=" << static_cast<int>(st.status)
                  << " msg=" << st.message << endl;
-            // No silent legacy fallback.
             break;
           }
         }
@@ -459,7 +536,7 @@ namespace control
         const double elapsed = std::chrono::duration<double>(
           std::chrono::steady_clock::now() - t0).count();
         if (elapsed > timeout_s) {
-          cout << "control-> unified traj TIMEOUT id=" << req_id
+          cout << "control-> unified traj TIMEOUT id=" << active_req_id
                << " after " << elapsed << " s" << endl;
           (void)cancel_unified_trajectory();
           break;
@@ -468,6 +545,7 @@ namespace control
       }
 
       in_plan_command_ = false;
+      cv_coord_quiet_.notify_all();
       if (!success) {
         cout << "control-> Something went wrong with go_point_unified.." << endl;
       }

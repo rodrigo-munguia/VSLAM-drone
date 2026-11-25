@@ -2,17 +2,20 @@
 #define GLOBALSLAM_G6_COORD_DISPATCH_HPP_
 
 /**
- * G6a: when may Global SLAM dispatch a Local SLAM correction relative to
- * control coordination?
+ * G6a / LC-CONSISTENCY-A4.1: Local SLAM correction dispatch vs control.
  *
- * Coordinate_mode (GS YAML, dormant while Apply_global_corrections=false):
- *   required       — must have pause ack for this transaction; no control → skip
+ * A4.1: visual/BA Local feedback is an **estimator-only** transaction. Production
+ * `Send_local_slam_pos_update` uses `decide_estimator_only_dispatch` and never
+ * calls CoordPause / quiescence / release / resume / legacy SimpleServ 'c'.
+ *
+ * Coordinate_mode remains for documentation and unit tests of the historical
+ * G6a pause protocol (manual/unrelated control coordination is unchanged):
+ *   required       — must have pause ack; no control → skip
  *   absent_ok      — if control service missing, dispatch without pause (lab)
- *   offline_bypass — never call control; dispatch directly (isolated LS tests)
+ *   offline_bypass — never call control; dispatch directly
  *
- * Default shipped: Apply=false so this gate is never consulted for live launch.
- * BA and close_loop both jump public odometry — both require the same protocol
- * when coordination is required.
+ * Control pose for Webots experiments uses Slam_feedback=false (GT/GPS), so
+ * discontinuous Local odometry does not drive the flight plan.
  */
 
 #include <cstdint>
@@ -110,6 +113,23 @@ inline bool use_legacy_control_c(
   bool applied)
 {
   return applied && close_loop_type && !coordinated_release_will_signal_cl;
+}
+
+/**
+ * A4.1 production dispatch for Local corrections: never request control pause.
+ * Equivalent to offline_bypass with corrections enabled.
+ */
+inline DispatchDecision decide_estimator_only_dispatch(bool apply_corrections)
+{
+  return decide_dispatch(
+    apply_corrections, CoordMode::OfflineBypass,
+    /*control_service_ready=*/false, /*pause_acknowledged=*/false);
+}
+
+/** True when a dispatch decision requires CoordPause / quiescence. */
+inline bool requires_control_pause(const DispatchDecision & d)
+{
+  return d.need_pause;
 }
 
 }  // namespace g6_coord
