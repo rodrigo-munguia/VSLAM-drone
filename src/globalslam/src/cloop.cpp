@@ -1,5 +1,6 @@
 #include "cloop.hpp"
 #include "gmap_landmark_identity.hpp"
+#include "gmap_identity_runtime_audit.hpp"
 
 #include <chrono>
 
@@ -54,14 +55,22 @@ void CLOOP::CLOOP_init()
 // Rodrigo M. 20222
 void CLOOP::Set_GlobalMap(GLOBAL_MAP &Gmap_c)
 {
+  gmap_identity_runtime_audit::log_snapshot_event("cloop_set_pre_src", Gmap_c, "from_gmap");
+  gmap_identity_runtime_audit::log_snapshot_event("cloop_set_pre_dst", Gmap, "cloop_copy");
   gmap_landmark_id::assign_global_map_preserving_id_watermark(Gmap, Gmap_c);
+  gmap_identity_runtime_audit::log_snapshot_event("cloop_set_post", Gmap, "cloop_copy");
+  gmap_identity_runtime_audit::check_boundary("cloop_set_post", Gmap);
 }
 //------------------------------------------
 // Set global map
 // Rodrigo M. 20222
 void CLOOP::Get_GlobalMap(GLOBAL_MAP &Gmap_c)
 {
+  gmap_identity_runtime_audit::log_snapshot_event("cloop_get_pre", Gmap, "cloop_copy");
+  gmap_identity_runtime_audit::log_snapshot_event("cloop_get_pre_dst", Gmap_c, "gmap_auth");
   gmap_landmark_id::assign_global_map_preserving_id_watermark(Gmap_c, Gmap);
+  gmap_identity_runtime_audit::log_snapshot_event("cloop_get_post", Gmap_c, "gmap_auth");
+  gmap_identity_runtime_audit::check_boundary("cloop_get_post", Gmap_c);
 }
 
 //------------------------------------------

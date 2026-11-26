@@ -4,6 +4,7 @@
 #include "gmap_visual_sync.hpp"
 #include "gmap_map_mgmt_audit.hpp"
 #include "gmap_landmark_identity.hpp"
+#include "gmap_identity_runtime_audit.hpp"
 
 
 //-------------------------------------------
@@ -63,14 +64,22 @@ void GMAP::Add_Kf(KEYFRAME &kf)
 void GMAP::Get_GlobalMap(GLOBAL_MAP &Gmap_c)
 {
    // Watermark: dst=Gmap_c (often authoritative) must not regress if older.
+   gmap_identity_runtime_audit::log_snapshot_event("gmap_get_pre", Gmap, "src");
+   gmap_identity_runtime_audit::log_snapshot_event("gmap_get_pre_dst", Gmap_c, "dst");
    gmap_landmark_id::assign_global_map_preserving_id_watermark(Gmap_c, Gmap);
+   gmap_identity_runtime_audit::log_snapshot_event("gmap_get_post", Gmap_c, "dst");
+   gmap_identity_runtime_audit::check_boundary("gmap_get_post", Gmap_c);
 }
 //------------------------------------------
 // Set global map
 // Rodrigo M. 20222
 void GMAP::Set_GlobalMap(GLOBAL_MAP &Gmap_c)
 {
+  gmap_identity_runtime_audit::log_snapshot_event("gmap_set_pre_src", Gmap_c, "incoming");
+  gmap_identity_runtime_audit::log_snapshot_event("gmap_set_pre_dst", Gmap, "authoritative");
   gmap_landmark_id::assign_global_map_preserving_id_watermark(Gmap, Gmap_c);
+  gmap_identity_runtime_audit::log_snapshot_event("gmap_set_post", Gmap, "authoritative");
+  gmap_identity_runtime_audit::check_boundary("gmap_set_post", Gmap);
 }
 
 //------------------------------------------
@@ -246,6 +255,7 @@ void GMAP::Update()
            // Delete map points that have not been matched in a minimun number of keyframes
            std::vector<std::vector<int>> kf_vg_info; 
            Delete_points(kf_vg_info);
+           gmap_identity_runtime_audit::check_boundary("after_delete", Gmap);
            
            // Update visibility graph           
            Update_Visibility_Graph_with_deleted_points(kf_vg_info);
@@ -255,6 +265,7 @@ void GMAP::Update()
            // G6d: incremental BA is independently gated (feedback is separate).
            if (PAR.Enable_global_ba) {
              Bundle_adjustment();
+             gmap_identity_runtime_audit::check_boundary("after_ba", Gmap);
            } else {
              Delta_kf_n.zeros();
            } 

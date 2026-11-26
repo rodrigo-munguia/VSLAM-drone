@@ -289,6 +289,15 @@ if(BUILD_TESTING)
       target_link_libraries(test_gmap_landmark_identity_m3_m5
         ${BLAS_LIBRARIES} ${LAPACK_LIBRARIES})
     endif()
+    # GSLAM-MAP-ARCH-M6: deterministic BA-factor / logical-map equivalence.
+    ament_add_gtest(test_gmap_landmark_identity_m6
+      test/test_gmap_landmark_identity_m6.cpp)
+    if(TARGET test_gmap_landmark_identity_m6)
+      target_include_directories(test_gmap_landmark_identity_m6 PRIVATE src ../common)
+      ament_target_dependencies(test_gmap_landmark_identity_m6 OpenCV)
+      target_link_libraries(test_gmap_landmark_identity_m6
+        ${BLAS_LIBRARIES} ${LAPACK_LIBRARIES})
+    endif()
     ament_add_gtest(test_gmap_relative_kf_init
       test/test_gmap_relative_kf_init.cpp)
     if(TARGET test_gmap_relative_kf_init)
