@@ -32,6 +32,7 @@
 #include <gtsam/inference/Symbol.h>
 
 #include "globalslam_types.hpp"
+#include "gmap_landmark_identity.hpp"
 #include "../../common/Vision/vision.hpp"
 
 namespace gmap_ba_audit
@@ -103,9 +104,9 @@ inline ResidualStats compute_residual_stats(
     }
     gtsam::PinholeCamera<gtsam::Cal3_S2> camera(pose, *K);
     const auto & kf = Gmap.KeyFDATA[idx_kf];
-    for (size_t j = 0; j < kf.Idx_Matched_points.size(); ++j) {
-      const int64 idx_pt = kf.Idx_Matched_points[j];
-      if (idx_pt < 0 || static_cast<size_t>(idx_pt) >= Gmap.AnchorsDATA.size()) {
+    for (size_t j = 0; j < kf.Matched_landmark_ids.size(); ++j) {
+      std::size_t idx_pt = 0;
+      if (!gmap_landmark_id::resolve_landmark_index(Gmap, kf.Matched_landmark_ids[j], idx_pt)) {
         continue;
       }
       gtsam::Point3 X;
@@ -167,8 +168,9 @@ inline std::vector<LandmarkGeo> landmark_geometry(
     for (int idx_kf : idx_kf_to_optimize) {
       const auto & kf = Gmap.KeyFDATA[idx_kf];
       bool sees = false;
-      for (int64 m : kf.Idx_Matched_points) {
-        if (m == idx_pt) {
+      const LandmarkId want = Gmap.AnchorsDATA[idx_pt].id;
+      for (LandmarkId m : kf.Matched_landmark_ids) {
+        if (m == want) {
           sees = true;
           break;
         }
@@ -255,7 +257,7 @@ inline void append_window_jsonl(
   auto geo = landmark_geometry(Gmap_before_commit, idx_kf_to_optimize, idx_points);
   int n_obs = 0;
   for (int idx_kf : idx_kf_to_optimize) {
-    n_obs += static_cast<int>(Gmap_before_commit.KeyFDATA[idx_kf].Idx_Matched_points.size());
+    n_obs += static_cast<int>(Gmap_before_commit.KeyFDATA[idx_kf].Matched_landmark_ids.size());
   }
 
   double parallax_min = 1e9, parallax_med = 0, depth_min = 1e9, depth_med = 0;

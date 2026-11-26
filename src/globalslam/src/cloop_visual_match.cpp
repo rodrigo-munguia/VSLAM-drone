@@ -1,4 +1,5 @@
 #include "cloop.hpp"
+#include "gmap_landmark_identity.hpp"
 #include "cloop_visual_retrieve.hpp"
 
 #include <chrono>
@@ -56,10 +57,11 @@ void CLOOP::Match_list_of_points_into_KF(std::vector<int64> &idx_points, int idx
             double max_inov_error = (double)PAR.VM_max_inov_error;
             if(dis < max_inov_error)
               {
-                int64 Idx_matched_A = Idx_candidate_A[Descriptor_idx_A]; // get index of the matched map point (anchor)
+                int64 Idx_matched_A = Idx_candidate_A[Descriptor_idx_A]; // storage index
                 
                 idx_matched_points.push_back(Idx_matched_A);
-                Gmap.KeyFDATA[idx_KF].Idx_Matched_points.push_back(Idx_matched_A); // Add the index of the matched map point to the list of Kf matched points
+                Gmap.KeyFDATA[idx_KF].Matched_landmark_ids.push_back(
+                  Gmap.AnchorsDATA[Idx_matched_A].id);
                 Gmap.KeyFDATA[idx_KF].UV_Matched_points.push_back(pt_m);
                 
                 Gmap.AnchorsDATA[Idx_matched_A].n_kf_matched++; 
@@ -171,14 +173,13 @@ CLOOP::Collect_ranked_visual_candidates(
     }
     cv::Mat Descriptors_C;
     std::vector<int64> Idx_candidate_C;
-    for (size_t j = 0; j < Gmap.KeyFDATA[idx_kf].Idx_Matched_points.size(); ++j) {
-      const int64 idx_pt = Gmap.KeyFDATA[idx_kf].Idx_Matched_points[j];
-      if (idx_pt < 0 ||
-        idx_pt >= static_cast<int64>(Gmap.AnchorsDATA.size()))
-      {
+    for (size_t j = 0; j < Gmap.KeyFDATA[idx_kf].Matched_landmark_ids.size(); ++j) {
+      const LandmarkId lid = Gmap.KeyFDATA[idx_kf].Matched_landmark_ids[j];
+      std::size_t idx_pt = 0;
+      if (!gmap_landmark_id::resolve_landmark_index(Gmap, lid, idx_pt)) {
         continue;
       }
-      Idx_candidate_C.push_back(idx_pt);
+      Idx_candidate_C.push_back(static_cast<int64>(idx_pt));
       Descriptors_C.push_back(Gmap.AnchorsDATA[idx_pt].Descriptor);
     }
     if (Descriptors_C.empty()) {
@@ -318,9 +319,10 @@ void CLOOP::Match_Gmap_points_into_KF(int idx_KF)
             double max_inov_error = (double)PAR.VM_max_inov_error;
             if(dis < max_inov_error)
               {
-                int64 Idx_matched_A = Idx_candidate_A[Descriptor_idx_A]; // get index of the matched map point (anchor)
+                int64 Idx_matched_A = Idx_candidate_A[Descriptor_idx_A]; // storage index
 
-                Gmap.KeyFDATA[idx_KF].Idx_Matched_points.push_back(Idx_matched_A); // Add the index of the matched map point to the list of Kf matched points
+                Gmap.KeyFDATA[idx_KF].Matched_landmark_ids.push_back(
+                  Gmap.AnchorsDATA[Idx_matched_A].id);
                 Gmap.KeyFDATA[idx_KF].UV_Matched_points.push_back(pt_m);
                 
                 Gmap.AnchorsDATA[Idx_matched_A].n_kf_matched++; 

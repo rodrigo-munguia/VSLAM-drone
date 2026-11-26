@@ -7,6 +7,7 @@
 #include <unordered_map>
 #include "opencv2/opencv.hpp"
 #include "../../common/keyframe_types.hpp"
+#include "../../common/landmark_id.hpp"
 
 
 
@@ -14,6 +15,7 @@ using namespace std;
 
 
 // KEYFRAME is defined in common/keyframe_types.hpp (shared with localslam).
+// LandmarkId is defined in common/landmark_id.hpp.
 
 struct KeyFramesData
  {
@@ -22,30 +24,6 @@ struct KeyFramesData
      cv::Point2f PredictedPoint; // Predicted pixel position of the feature
      cv::Point2f MatchedPoint;  // Matched (measured) position of the feature
  };
-
-/**
- * Production stable landmark identity (GSLAM-MAP-ARCH-M1/M2).
- * Explicit construction only — not convertible to/from storage indices.
- * Convention: value 0 = invalid/unassigned; valid IDs allocate from 1.
- */
-struct LandmarkId
-{
-  std::uint64_t value{0};
-};
-
-struct LandmarkIdHash
-{
-  std::size_t operator()(LandmarkId id) const noexcept
-  {
-    return static_cast<std::size_t>(id.value);
-  }
-};
-
-inline bool operator==(LandmarkId a, LandmarkId b)
-{
-  return a.value == b.value;
-}
-inline bool operator!=(LandmarkId a, LandmarkId b) { return !(a == b); }
 
 struct G_ANCHOR
 {       

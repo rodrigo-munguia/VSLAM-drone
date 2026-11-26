@@ -187,9 +187,9 @@ std::vector<int64> GMAP::Init_new_map_points()
 
             bool consider_inlier = true;
             // check for every of the already matched points
-            for(int j = 0; j < Gmap.KeyFDATA[idx_current_KF].Idx_Matched_points.size(); j++)
+            for(int j = 0; j < Gmap.KeyFDATA[idx_current_KF].Matched_landmark_ids.size(); j++)
             {
-               //int64 idx_already_matche_pt = Gmap.KeyFDATA[idx_current_KF].Idx_Matched_points[j];
+               // LandmarkId already_matched = Gmap.KeyFDATA[idx_current_KF].Matched_landmark_ids[j];
                cv::Point2f pt_mapped = Gmap.KeyFDATA[idx_current_KF] .UV_Matched_points[j];
 
                double dis = sqrt( pow(pt_current.x - pt_mapped.x,2) + pow(pt_current.y - pt_mapped.y,2) );
@@ -369,11 +369,12 @@ std::vector<int64> GMAP::Init_new_map_points()
                         if(PAR.Stats)total_init_anchors++;
                         //cout << "x";
                         int64 idx_anchor = Gmap.AnchorsDATA.size()-1;
+                        const LandmarkId lid = Gmap.AnchorsDATA[idx_anchor].id;
 
-                        Gmap.KeyFDATA[idx_current_KF].Idx_Matched_points.push_back(idx_anchor);
+                        Gmap.KeyFDATA[idx_current_KF].Matched_landmark_ids.push_back(lid);
                         Gmap.KeyFDATA[idx_current_KF].UV_Matched_points.push_back(uv_curr_pt);
 
-                        Gmap.KeyFDATA[idx_previous_KF].Idx_Matched_points.push_back(idx_anchor);
+                        Gmap.KeyFDATA[idx_previous_KF].Matched_landmark_ids.push_back(lid);
                         Gmap.KeyFDATA[idx_previous_KF].UV_Matched_points.push_back(uv_prev_pt);
 
                         idx_new_points.push_back(idx_anchor);
@@ -479,11 +480,12 @@ std::vector<int64> GMAP::Init_new_map_points()
             if(PAR.Stats)total_init_anchors++;
 
             int64 idx_anchor = Gmap.AnchorsDATA.size()-1;
+            const LandmarkId lid = Gmap.AnchorsDATA[idx_anchor].id;
 
-                        Gmap.KeyFDATA[idx_current_KF].Idx_Matched_points.push_back(idx_anchor);
+                        Gmap.KeyFDATA[idx_current_KF].Matched_landmark_ids.push_back(lid);
                         Gmap.KeyFDATA[idx_current_KF].UV_Matched_points.push_back(uv1d);
 
-                        Gmap.KeyFDATA[idx_previous_KF].Idx_Matched_points.push_back(idx_anchor);
+                        Gmap.KeyFDATA[idx_previous_KF].Matched_landmark_ids.push_back(lid);
                         Gmap.KeyFDATA[idx_previous_KF].UV_Matched_points.push_back(uv2d);
 
             idx_new_points.push_back(idx_anchor);

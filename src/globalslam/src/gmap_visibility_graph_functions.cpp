@@ -1,4 +1,5 @@
 #include "gmap.hpp"
+#include "gmap_landmark_identity.hpp"
 
 //------------------------------------------------------------------------------------------------
 std::vector<int> GMAP::Get_n_oldest_visually_linked_kf(int idx_kf,int n_oldest, int min_v_strength )
@@ -114,9 +115,13 @@ void GMAP::Update_Visibility_Graph_with_new_KF()
   // -----for taking into account the visual link with 0-kf
   if(idx_KF == 2)
   {
-    for(int i = 0; i < Gmap.KeyFDATA[idx_KF-1].Idx_Matched_points.size();i++)
+    for(int i = 0; i < Gmap.KeyFDATA[idx_KF-1].Matched_landmark_ids.size();i++)
     {
-      int64 idx_pt = Gmap.KeyFDATA[idx_KF-1].Idx_Matched_points[i];
+      const LandmarkId lid = Gmap.KeyFDATA[idx_KF-1].Matched_landmark_ids[i];
+      std::size_t idx_pt = 0;
+      if (!gmap_landmark_id::resolve_landmark_index(Gmap, lid, idx_pt)) {
+        continue;
+      }
 
       int idx_init_kf = Gmap.AnchorsDATA[idx_pt].init_KF;
 
@@ -129,15 +134,15 @@ void GMAP::Update_Visibility_Graph_with_new_KF()
   }
   //----------------------------------------------------------
 
-  for(int i = 0; i < Gmap.KeyFDATA[idx_KF].Idx_Matched_points.size();i++)
+  for(int i = 0; i < Gmap.KeyFDATA[idx_KF].Matched_landmark_ids.size();i++)
   {
-      int64 idx_pt = Gmap.KeyFDATA[idx_KF].Idx_Matched_points[i];
+      const LandmarkId lid = Gmap.KeyFDATA[idx_KF].Matched_landmark_ids[i];
 
       for (int j = 0; j < Gmap.KeyFDATA.size()-1 ; j++)
       {
-        for(int k = 0; k < Gmap.KeyFDATA[j].Idx_Matched_points.size();k++)
+        for(int k = 0; k < Gmap.KeyFDATA[j].Matched_landmark_ids.size();k++)
         {
-           if (idx_pt == Gmap.KeyFDATA[j].Idx_Matched_points[k])
+           if (lid == Gmap.KeyFDATA[j].Matched_landmark_ids[k])
            {
              vg_row[j]++;
              break;

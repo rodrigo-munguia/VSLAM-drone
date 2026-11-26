@@ -14,6 +14,7 @@
 #include <opencv2/opencv.hpp>
 #include <vector>
 
+#include "landmark_id.hpp"
 #include "slam_identity.hpp"
 
 struct KEYFRAME
@@ -27,8 +28,8 @@ struct KEYFRAME
   arma::vec::fixed<3> t_c2n;
   std::vector<cv::KeyPoint> keyPoints_all;
   cv::Mat Descriptors_all;
-  // OpenCV typedef int64 (same as historical globalslam_types.hpp field).
-  std::vector<int64> Idx_Matched_points;
+  // Persistent GlobalSLAM landmark associations (stable IDs; not storage indices).
+  std::vector<LandmarkId> Matched_landmark_ids;
   std::vector<cv::Point2d> UV_Matched_points;
   double radius_uncertainty{0.0};
 

@@ -4,6 +4,7 @@
 #include "gmap_ba_replay_dump.hpp"
 #include "gmap_ba_d5_log.hpp"
 #include "gmap_map_mgmt_audit.hpp"
+#include "gmap_landmark_identity.hpp"
 
 #include <array>
 #include <chrono>
@@ -163,9 +164,15 @@ void GMAP::Bundle_adjustment()
         initial.insert(gtsam::Symbol('x', idx_kf), pose);
 
         // ------------  add visual measurements
-        for ( int j = 0; j < Gmap.KeyFDATA[idx_kf].Idx_Matched_points.size(); j++)
+        for ( int j = 0; j < Gmap.KeyFDATA[idx_kf].Matched_landmark_ids.size(); j++)
         {
-          int64 idx_pt = Gmap.KeyFDATA[idx_kf].Idx_Matched_points[j];
+          const LandmarkId lid = Gmap.KeyFDATA[idx_kf].Matched_landmark_ids[j];
+          std::size_t idx_pt = 0;
+          if (!gmap_landmark_id::resolve_landmark_index(Gmap, lid, idx_pt)) {
+            cout << "gmap BA: unresolved LandmarkId=" << lid.value
+                 << " kf=" << idx_kf << " — skipping factor" << endl;
+            continue;
+          }
           
          cv::Point2f ud_d = Gmap.KeyFDATA[idx_kf].UV_Matched_points[j];
 
@@ -176,22 +183,20 @@ void GMAP::Bundle_adjustment()
           pt(0) =  uv_u.x;
           pt(1) =  uv_u.y;
           
-          //graph.emplace_shared<gtsam::GeneralSFMFactor2<gtsam::Cal3_S2>>(pt, measurement_noise, gtsam::Symbol('x', idx_kf), gtsam::Symbol('l', i), gtsam::Symbol('K', 0));
+          // Symbol('l', storage_index) preserved for numerical parity (M4).
           graph.emplace_shared<gtsam::GenericProjectionFactor<gtsam::Pose3, gtsam::Point3, gtsam::Cal3_S2> >(pt, measurement_noise, gtsam::Symbol('x', idx_kf), gtsam::Symbol('l', idx_pt), K);
           
-         // cout << "add visual measurement, kf: " << i << " with point: " << idx_pt << endl;
-          auto it = std::find(idx_points.begin(), idx_points.end(), idx_pt);
+          auto it = std::find(idx_points.begin(), idx_points.end(), static_cast<int64>(idx_pt));
 
             if(it==idx_points.end())
             {
-              // if index of point has not been already added then
-              idx_points.push_back(idx_pt);
+              idx_points.push_back(static_cast<int64>(idx_pt));
             }          
 
-        } // for ( int j = 0; j < Gmap.KeyFDATA[i].Idx_Matched_points.size(); j++)
+        } // for ( int j = 0; j < Gmap.KeyFDATA[i].Matched_landmark_ids.size(); j++)
         //--------------------------------------------------------------
        
-      // cout << "Kf: " << idx_kf << " n matches: " << Gmap.KeyFDATA[idx_kf].Idx_Matched_points.size()  << endl;
+      // cout << "Kf: " << idx_kf << " n matches: " << Gmap.KeyFDATA[idx_kf].Matched_landmark_ids.size()  << endl;
 
     } // for (int i = idx_Fixed_kf_ref; i < Gmap.KeyFDATA.size(); i++)
     //cout << endl;
@@ -314,7 +319,7 @@ void GMAP::Bundle_adjustment()
     if (gmap_map_mgmt_audit::enabled()) {
       int n_obs = 0;
       for (int idx_kf : idx_kf_to_optimize) {
-        n_obs += static_cast<int>(Gmap.KeyFDATA[idx_kf].Idx_Matched_points.size());
+        n_obs += static_cast<int>(Gmap.KeyFDATA[idx_kf].Matched_landmark_ids.size());
       }
       gmap_map_mgmt_audit::note_ba(
         static_cast<int>(idx_kf_to_optimize.size()),

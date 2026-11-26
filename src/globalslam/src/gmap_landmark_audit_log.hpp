@@ -26,6 +26,7 @@
 #include <armadillo>
 
 #include "globalslam_types.hpp"
+#include "gmap_landmark_identity.hpp"
 #include "gmap_birth_reproj.hpp"
 #include "../../common/Vision/vision.hpp"
 
@@ -357,9 +358,10 @@ inline void append_ba_obs_pre_jsonl(
   bool first = true;
   for (int idx_kf : idx_kf_to_optimize) {
     const auto & kf = Gmap.KeyFDATA[idx_kf];
-    for (size_t j = 0; j < kf.Idx_Matched_points.size(); ++j) {
-      const int64_t idx_pt = kf.Idx_Matched_points[j];
-      if (idx_pt < 0 || static_cast<size_t>(idx_pt) >= Gmap.AnchorsDATA.size()) {
+    for (size_t j = 0; j < kf.Matched_landmark_ids.size(); ++j) {
+      std::size_t idx_pt = 0;
+      if (!gmap_landmark_id::resolve_landmark_index(
+            Gmap, kf.Matched_landmark_ids[j], idx_pt)) {
         continue;
       }
       const auto & A = Gmap.AnchorsDATA[idx_pt];
@@ -373,6 +375,7 @@ inline void append_ba_obs_pre_jsonl(
       first = false;
       out << "{\"audit_id\":" << A.audit_id
           << ",\"idx_pt\":" << idx_pt
+          << ",\"landmark_id\":" << kf.Matched_landmark_ids[j].value
           << ",\"idx_kf\":" << idx_kf
           << ",\"keyframe_id\":" << kf.keyframe_id
           << ",\"init_kf\":" << A.init_KF

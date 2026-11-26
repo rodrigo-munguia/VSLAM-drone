@@ -280,6 +280,15 @@ if(BUILD_TESTING)
       target_link_libraries(test_gmap_landmark_identity_m1_m2
         ${BLAS_LIBRARIES} ${LAPACK_LIBRARIES})
     endif()
+    # GSLAM-MAP-ARCH-M3/M4/M5: persistent observation IDs + cull without remapping.
+    ament_add_gtest(test_gmap_landmark_identity_m3_m5
+      test/test_gmap_landmark_identity_m3_m5.cpp)
+    if(TARGET test_gmap_landmark_identity_m3_m5)
+      target_include_directories(test_gmap_landmark_identity_m3_m5 PRIVATE src ../common)
+      ament_target_dependencies(test_gmap_landmark_identity_m3_m5 OpenCV)
+      target_link_libraries(test_gmap_landmark_identity_m3_m5
+        ${BLAS_LIBRARIES} ${LAPACK_LIBRARIES})
+    endif()
     ament_add_gtest(test_gmap_relative_kf_init
       test/test_gmap_relative_kf_init.cpp)
     if(TARGET test_gmap_relative_kf_init)

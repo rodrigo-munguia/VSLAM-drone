@@ -1,6 +1,9 @@
 #include "cloop.hpp"
 #include "gmap_landmark_identity.hpp"
 
+// Inactive legacy fusion (call site commented). Minimal M3 compile compatibility only —
+// known algorithm defects are intentionally NOT repaired here.
+
 
 void CLOOP::Fuse_map_points(int &idx_kf_matched)
 {
@@ -15,44 +18,30 @@ void CLOOP::Fuse_map_points(int &idx_kf_matched)
     idx_vl_matched_kf.push_back(idx_matched_kf);
     sort(idx_vl_matched_kf.begin(), idx_vl_matched_kf.end());
 
-    //-----------------------------------------------------------
-    // get index of old points that can be potentially matched with recent points
-    std::vector<int64> idx_old_points;
-    for(int i = 0; i < idx_vl_matched_kf.size(); i++)
-    {
-        int idx_kf = idx_vl_matched_kf[i];
+    auto collect_storage_indices = [&](const std::vector<int> & idx_vl) {
+      std::vector<int64> out;
+      for (int idx_kf : idx_vl) {
+        for (const LandmarkId lid : Gmap.KeyFDATA[idx_kf].Matched_landmark_ids) {
+          std::size_t idx_pt = 0;
+          if (!gmap_landmark_id::resolve_landmark_index(Gmap, lid, idx_pt)) {
+            continue;
+          }
+          const int64 idx = static_cast<int64>(idx_pt);
+          if (std::find(out.begin(), out.end(), idx) == out.end()) {
+            out.push_back(idx);
+          }
+        }
+      }
+      return out;
+    };
 
-        for(int j = 0; j < Gmap.KeyFDATA[idx_kf].Idx_Matched_points.size(); j++)
-        {
-            int64 idx_pt = Gmap.KeyFDATA[idx_kf].Idx_Matched_points[j];
-            if ( std::find(idx_old_points.begin(), idx_old_points.end(), idx_pt) == idx_old_points.end() )
-            {
-                idx_old_points.push_back(idx_pt);
-            }
-        }     
-    }
-    //---------------------------------------------------------------
-    // get index of recent points that can be potentially matched with old points
-    std::vector<int64> idx_new_points;
-    for(int i = 0; i < idx_vl_new_kf.size(); i++)
-    {
-        int idx_kf = idx_vl_new_kf[i];
+    std::vector<int64> idx_old_points = collect_storage_indices(idx_vl_matched_kf);
+    std::vector<int64> idx_new_points = collect_storage_indices(idx_vl_new_kf);
 
-        for(int j = 0; j < Gmap.KeyFDATA[idx_kf].Idx_Matched_points.size(); j++)
-        {
-            int64 idx_pt = Gmap.KeyFDATA[idx_kf].Idx_Matched_points[j];
-            if ( std::find(idx_new_points.begin(), idx_new_points.end(), idx_pt) == idx_new_points.end() )
-            {
-                idx_new_points.push_back(idx_pt);
-            }
-        }     
-    }
-    //------------------------------------------------------------------------
     std::vector<int64> idx_matched_new_pts;
     std::vector<int64> idx_matched_old_pts;
     Match_a_points_with_b_points(idx_new_points,idx_old_points,idx_matched_new_pts,idx_matched_old_pts);
 
-    // idx_matched_new_pts contains the index of new points that have been matched with the corresponding index of contained in idx_matched_old_pts
     std::vector<int> idx_vl_kf_A;
     std::vector<int> idx_vl_kf_B;
     
@@ -60,56 +49,54 @@ void CLOOP::Fuse_map_points(int &idx_kf_matched)
     {
         int64 idx_new_pt = idx_matched_new_pts[i];
         int64 idx_old_pt = idx_matched_old_pts[i];
+        if (idx_new_pt < 0 || idx_old_pt < 0 ||
+          static_cast<std::size_t>(idx_new_pt) >= Gmap.AnchorsDATA.size() ||
+          static_cast<std::size_t>(idx_old_pt) >= Gmap.AnchorsDATA.size())
+        {
+          continue;
+        }
+        const LandmarkId id_new = Gmap.AnchorsDATA[idx_new_pt].id;
+        const LandmarkId id_old = Gmap.AnchorsDATA[idx_old_pt].id;
         
-        // delete old point
         Gmap.AnchorsDATA[idx_old_pt].n_kf_matched += Gmap.AnchorsDATA[idx_new_pt].n_kf_matched; 
+        // Legacy buggy erase retained (inactive path).
         Gmap.AnchorsDATA.erase(Gmap.AnchorsDATA.begin()+i);
-        
 
-        // get a list of kf where "idx_old_pt" has been matched
         std::vector<int64> idx_kf_old_pt;
         for (int j = 0; j < idx_vl_matched_kf[idx_vl_matched_kf.size()-1] ; j++)
         {
-            for( int k = 0; k < Gmap.KeyFDATA[j].Idx_Matched_points.size(); k++)
+            for( int k = 0; k < Gmap.KeyFDATA[j].Matched_landmark_ids.size(); k++)
             {
-                if(Gmap.KeyFDATA[j].Idx_Matched_points[k] == idx_old_pt)
+                if(Gmap.KeyFDATA[j].Matched_landmark_ids[k] == id_old)
                 {
                    idx_kf_old_pt.push_back(j); 
                 }
             }    
         }         
         
-        // replace index of matched new points with index of old matched points 
         for(int j = 0; j < idx_vl_new_kf.size() ; j++)
         {
             int idx_kf = idx_vl_new_kf[j];                        
-            for( int k = 0; k < Gmap.KeyFDATA[idx_kf].Idx_Matched_points.size(); k++)
+            for( int k = 0; k < Gmap.KeyFDATA[idx_kf].Matched_landmark_ids.size(); k++)
             {
-                if(Gmap.KeyFDATA[idx_kf].Idx_Matched_points[k] == idx_new_pt)
+                if(Gmap.KeyFDATA[idx_kf].Matched_landmark_ids[k] == id_new)
                 {
-                     Gmap.KeyFDATA[idx_kf].Idx_Matched_points[k] = idx_old_pt;
-
-                     // storing visually linked kf
+                     Gmap.KeyFDATA[idx_kf].Matched_landmark_ids[k] = id_old;
                      for(int l = 0; l < idx_kf_old_pt.size();l++)
                      {   
                          int idx_kf_B = idx_kf_old_pt[l];
                          idx_vl_kf_A.push_back(idx_kf);
                          idx_vl_kf_B.push_back(idx_kf_B);
                      }   
-
                 }
             }            
         }
        
     }
     
-    // update visibility graph
     Update_Visibility_Graph_A_B_links(idx_vl_kf_A,idx_vl_kf_B);
-
-    // Inactive path: if ever enabled, keep lookup coherent after erases.
     gmap_landmark_id::rebuild_id_to_index(Gmap);
 
     int q = 10;    
 
 }
-

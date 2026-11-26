@@ -136,15 +136,11 @@ inline void assign_global_map_preserving_id_watermark(
 }
 
 /**
- * Order-preserving erase of AnchorsDATA[i] with existing KF observation
- * remapping semantics (M1/M2 still index-based). Does not touch id_to_index;
- * caller must rebuild after a deletion batch.
- *
- * Note: after erasing Idx at k, the next element shifts into k — the prior
- * Delete_points loop could skip the remapped successor; this version advances
- * k only when not erasing (same historical quirk avoided for erase path).
+ * Remove KF observations referencing deleted_id (no remapping of survivors).
+ * Order-preserving erase of AnchorsDATA[i]. Does not touch id_to_index;
+ * caller must rebuild after a deletion batch (M3–M5).
  */
-inline void erase_storage_index_preserving_order(
+inline void erase_landmark_at_storage_index(
   GLOBAL_MAP & map,
   std::size_t i,
   std::vector<int> * kf_vl_out)
@@ -152,22 +148,19 @@ inline void erase_storage_index_preserving_order(
   if (i >= map.AnchorsDATA.size()) {
     return;
   }
+  const LandmarkId deleted_id = map.AnchorsDATA[i].id;
   std::vector<int> kf_vl;
   for (int j = static_cast<int>(map.KeyFDATA.size()) - 1; j >= 0; --j) {
-    for (std::size_t k = 0; k < map.KeyFDATA[j].Idx_Matched_points.size();) {
-      const int64_t idx = map.KeyFDATA[j].Idx_Matched_points[k];
-      if (idx == static_cast<int64_t>(i)) {
-        map.KeyFDATA[j].Idx_Matched_points.erase(
-          map.KeyFDATA[j].Idx_Matched_points.begin() +
-          static_cast<std::ptrdiff_t>(k));
-        map.KeyFDATA[j].UV_Matched_points.erase(
-          map.KeyFDATA[j].UV_Matched_points.begin() +
-          static_cast<std::ptrdiff_t>(k));
+    auto & ids = map.KeyFDATA[j].Matched_landmark_ids;
+    auto & uvs = map.KeyFDATA[j].UV_Matched_points;
+    for (std::size_t k = 0; k < ids.size();) {
+      if (ids[k] == deleted_id) {
+        ids.erase(ids.begin() + static_cast<std::ptrdiff_t>(k));
+        if (k < uvs.size()) {
+          uvs.erase(uvs.begin() + static_cast<std::ptrdiff_t>(k));
+        }
         kf_vl.push_back(j);
         continue;
-      }
-      if (idx > static_cast<int64_t>(i)) {
-        map.KeyFDATA[j].Idx_Matched_points[k] = idx - 1;
       }
       ++k;
     }
@@ -176,6 +169,46 @@ inline void erase_storage_index_preserving_order(
     map.AnchorsDATA.begin() + static_cast<std::ptrdiff_t>(i));
   if (kf_vl_out) {
     *kf_vl_out = std::move(kf_vl);
+  }
+}
+
+/** Alias used by M1/M2 tests; prefer erase_landmark_at_storage_index. */
+inline void erase_storage_index_preserving_order(
+  GLOBAL_MAP & map,
+  std::size_t i,
+  std::vector<int> * kf_vl_out)
+{
+  erase_landmark_at_storage_index(map, i, kf_vl_out);
+}
+
+/**
+ * Production culling body used by GMAP::Delete_points (testable seam).
+ * Same predicate: n_tries > (min_keep-3) && n_matches < min_keep.
+ */
+inline void cull_underobserved_landmarks(
+  GLOBAL_MAP & map,
+  int delete_min_kf_matched_for_keep,
+  std::vector<std::vector<int>> & kf_vg_info,
+  int * n_deleted_out = nullptr)
+{
+  int n_deleted = 0;
+  for (int64_t i = static_cast<int64_t>(map.AnchorsDATA.size()) - 1; i >= 0; --i) {
+    const int n_matches = map.AnchorsDATA[static_cast<std::size_t>(i)].n_kf_matched;
+    const int n_tries = map.AnchorsDATA[static_cast<std::size_t>(i)].n_tries_matchs;
+    if (n_tries > (delete_min_kf_matched_for_keep - 3) &&
+      n_matches < delete_min_kf_matched_for_keep)
+    {
+      std::vector<int> kf_vl;
+      erase_landmark_at_storage_index(map, static_cast<std::size_t>(i), &kf_vl);
+      kf_vg_info.push_back(std::move(kf_vl));
+      ++n_deleted;
+    }
+  }
+  if (n_deleted > 0) {
+    rebuild_id_to_index(map);
+  }
+  if (n_deleted_out) {
+    *n_deleted_out = n_deleted;
   }
 }
 
@@ -241,6 +274,22 @@ inline IdentityInvariantReport validate_landmark_identity_invariants(
       r.ok = false;
       r.reason = "lookup_reverse_mismatch";
       return r;
+    }
+  }
+  // Persistent observation consistency (M3+).
+  for (std::size_t ki = 0; ki < map.KeyFDATA.size(); ++ki) {
+    const auto & kf = map.KeyFDATA[ki];
+    if (kf.Matched_landmark_ids.size() != kf.UV_Matched_points.size()) {
+      r.ok = false;
+      r.reason = "obs_uv_length_mismatch";
+      return r;
+    }
+    for (const LandmarkId lid : kf.Matched_landmark_ids) {
+      if (!is_valid(lid) || !contains_landmark(map, lid)) {
+        r.ok = false;
+        r.reason = "obs_unresolved_id";
+        return r;
+      }
     }
   }
   return r;

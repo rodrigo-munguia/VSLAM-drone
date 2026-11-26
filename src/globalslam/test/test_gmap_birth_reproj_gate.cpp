@@ -114,7 +114,7 @@ TEST(BirthReprojGate, BehindCameraYieldsNonfinite)
 TEST(BirthReprojGate, RejectLeavesNoPartialStateContract)
 {
   // Documentary: Init_new_map_points must `continue` before AnchorsDATA /
-  // Idx_Matched_points mutation when the gate rejects. Enforced by code review
+  // Matched_landmark_ids mutation when the gate rejects. Enforced by code review
   // + integration A/B; this unit checks decision-only reject path.
   EXPECT_FALSE(gmap_birth_reproj::passes_gate(true, 25.0, 20.0));
 }

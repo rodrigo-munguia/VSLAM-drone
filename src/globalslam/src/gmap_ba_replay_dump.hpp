@@ -18,6 +18,7 @@
 #include <gtsam/geometry/Cal3_S2.h>
 
 #include "globalslam_types.hpp"
+#include "gmap_landmark_identity.hpp"
 #include "../../common/Vision/vision.hpp"
 
 namespace gmap_ba_replay
@@ -106,9 +107,10 @@ inline void dump_window(
   bool first = true;
   for (int idx_kf : idx_kf_to_optimize) {
     const auto & kf = Gmap.KeyFDATA[idx_kf];
-    for (size_t j = 0; j < kf.Idx_Matched_points.size(); ++j) {
-      const int64_t idx_pt = kf.Idx_Matched_points[j];
-      if (idx_pt < 0 || static_cast<size_t>(idx_pt) >= Gmap.AnchorsDATA.size()) {
+    for (size_t j = 0; j < kf.Matched_landmark_ids.size(); ++j) {
+      std::size_t idx_pt = 0;
+      if (!gmap_landmark_id::resolve_landmark_index(
+            Gmap, kf.Matched_landmark_ids[j], idx_pt)) {
         continue;
       }
       // Match production: factors use undistorted UV.
@@ -119,6 +121,7 @@ inline void dump_window(
       first = false;
       out << "{\"idx_kf\":" << idx_kf
           << ",\"idx_pt\":" << idx_pt
+          << ",\"landmark_id\":" << kf.Matched_landmark_ids[j].value
           << ",\"audit_id\":" << Gmap.AnchorsDATA[idx_pt].audit_id
           << ",\"uv_u\":[" << ud.x << ',' << ud.y << "]}";
     }

@@ -164,8 +164,9 @@ TEST(LandmarkIdentityM1M2, DeleteAndReinsertNoReuse)
   expect_invariants(map);
 }
 
-TEST(LandmarkIdentityM1M2, ObservationRemappingPreserved)
+TEST(LandmarkIdentityM1M2, ObservationIdsSurviveDeletionWithoutRenumber)
 {
+  // Updated for M3–M5: persistent refs are LandmarkIds; survivors not renumbered.
   GLOBAL_MAP map;
   KEYFRAME kf0;
   KEYFRAME kf1;
@@ -174,26 +175,21 @@ TEST(LandmarkIdentityM1M2, ObservationRemappingPreserved)
   const LandmarkId id0 = insert_landmark(map, make_anchor(0));
   const LandmarkId id1 = insert_landmark(map, make_anchor(1));
   const LandmarkId id2 = insert_landmark(map, make_anchor(2));
-  (void)id0;
-  (void)id1;
-  (void)id2;
-  // KF0 observes slots 0,1,2; KF1 observes 1,2
-  map.KeyFDATA[0].Idx_Matched_points = {0, 1, 2};
+  map.KeyFDATA[0].Matched_landmark_ids = {id0, id1, id2};
   map.KeyFDATA[0].UV_Matched_points = {{1, 1}, {2, 2}, {3, 3}};
-  map.KeyFDATA[1].Idx_Matched_points = {1, 2};
+  map.KeyFDATA[1].Matched_landmark_ids = {id1, id2};
   map.KeyFDATA[1].UV_Matched_points = {{4, 4}, {5, 5}};
 
-  // Delete middle storage index 1 (same remapping contract as Delete_points).
   erase_storage_index_preserving_order(map, 1, nullptr);
   rebuild_id_to_index(map);
 
-  ASSERT_EQ(map.KeyFDATA[0].Idx_Matched_points.size(), 2u);
-  EXPECT_EQ(map.KeyFDATA[0].Idx_Matched_points[0], 0);
-  EXPECT_EQ(map.KeyFDATA[0].Idx_Matched_points[1], 1);
+  ASSERT_EQ(map.KeyFDATA[0].Matched_landmark_ids.size(), 2u);
+  EXPECT_EQ(map.KeyFDATA[0].Matched_landmark_ids[0], id0);
+  EXPECT_EQ(map.KeyFDATA[0].Matched_landmark_ids[1], id2);
   EXPECT_EQ(map.KeyFDATA[0].UV_Matched_points[0], cv::Point2d(1, 1));
   EXPECT_EQ(map.KeyFDATA[0].UV_Matched_points[1], cv::Point2d(3, 3));
-  ASSERT_EQ(map.KeyFDATA[1].Idx_Matched_points.size(), 1u);
-  EXPECT_EQ(map.KeyFDATA[1].Idx_Matched_points[0], 1);
+  ASSERT_EQ(map.KeyFDATA[1].Matched_landmark_ids.size(), 1u);
+  EXPECT_EQ(map.KeyFDATA[1].Matched_landmark_ids[0], id2);
   EXPECT_EQ(map.KeyFDATA[1].UV_Matched_points[0], cv::Point2d(5, 5));
   EXPECT_EQ(map.AnchorsDATA[0].id, id0);
   EXPECT_EQ(map.AnchorsDATA[1].id, id2);

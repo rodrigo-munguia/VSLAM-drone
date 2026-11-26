@@ -1,4 +1,5 @@
 #include "cloop.hpp"
+#include "gmap_landmark_identity.hpp"
 
 // Camera observations of landmarks (i.e. pixel coordinates) will be stored as Point2 (x, y).
 #include <gtsam/geometry/Point2.h>
@@ -139,9 +140,16 @@ void CLOOP::Update_gmap_with_BA(std::vector<int> &idx_vl_new_kf, std::vector<int
         initial.insert(gtsam::Symbol('x', idx_kf), pose);
 
         // ------------  add visual measurements
-        for ( int j = 0; j < Gmap.KeyFDATA[idx_kf].Idx_Matched_points.size(); j++)
+        for ( int j = 0; j < Gmap.KeyFDATA[idx_kf].Matched_landmark_ids.size(); j++)
         {
-          int64 idx_pt = Gmap.KeyFDATA[idx_kf].Idx_Matched_points[j];
+          const LandmarkId lid = Gmap.KeyFDATA[idx_kf].Matched_landmark_ids[j];
+          std::size_t idx_pt_sz = 0;
+          if (!gmap_landmark_id::resolve_landmark_index(Gmap, lid, idx_pt_sz)) {
+            cout << "cloop BA: unresolved LandmarkId=" << lid.value
+                 << " kf=" << idx_kf << " — skipping factor" << endl;
+            continue;
+          }
+          const int64 idx_pt = static_cast<int64>(idx_pt_sz);
           
          cv::Point2f ud_d = Gmap.KeyFDATA[idx_kf].UV_Matched_points[j];
 
@@ -152,22 +160,19 @@ void CLOOP::Update_gmap_with_BA(std::vector<int> &idx_vl_new_kf, std::vector<int
           pt(0) =  uv_u.x;
           pt(1) =  uv_u.y;
           
-          //graph.emplace_shared<gtsam::GeneralSFMFactor2<gtsam::Cal3_S2>>(pt, measurement_noise, gtsam::Symbol('x', idx_kf), gtsam::Symbol('l', i), gtsam::Symbol('K', 0));
           graph.emplace_shared<gtsam::GenericProjectionFactor<gtsam::Pose3, gtsam::Point3, gtsam::Cal3_S2> >(pt, measurement_noise, gtsam::Symbol('x', idx_kf), gtsam::Symbol('l', idx_pt), K);
           
-         // cout << "add visual measurement, kf: " << i << " with point: " << idx_pt << endl;
           auto it = std::find(idx_points.begin(), idx_points.end(), idx_pt);
 
             if(it==idx_points.end())
             {
-              // if index of point has not been already added then
               idx_points.push_back(idx_pt);
             }          
 
-        } // for ( int j = 0; j < Gmap.KeyFDATA[i].Idx_Matched_points.size(); j++)
+        } // for matched landmarks
         //--------------------------------------------------------------
        
-       cout << "cloop-> Kf: " << idx_kf << " n matches: " << Gmap.KeyFDATA[idx_kf].Idx_Matched_points.size()  << endl;
+       cout << "cloop-> Kf: " << idx_kf << " n matches: " << Gmap.KeyFDATA[idx_kf].Matched_landmark_ids.size()  << endl;
 
     } // for (int i = idx_Fixed_kf_ref; i < Gmap.KeyFDATA.size(); i++)
     cout << endl;

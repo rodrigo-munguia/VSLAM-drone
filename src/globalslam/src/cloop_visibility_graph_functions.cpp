@@ -1,4 +1,5 @@
 #include "cloop.hpp"
+#include "gmap_landmark_identity.hpp"
 //------------------------------------------------------------------------------------------------------
 void CLOOP::Update_Visibility_Graph_with_matched_points_into_KF(std::vector<int64> &idx_points, int idx_KF)
 {
@@ -6,14 +7,20 @@ void CLOOP::Update_Visibility_Graph_with_matched_points_into_KF(std::vector<int6
     for (int i = 0; i < idx_points.size(); i++)
     {
         int64 idx_pt = idx_points[i];
+        if (idx_pt < 0 ||
+          static_cast<std::size_t>(idx_pt) >= Gmap.AnchorsDATA.size())
+        {
+          continue;
+        }
+        const LandmarkId lid = Gmap.AnchorsDATA[idx_pt].id;
         
         for (int j = 0 ; j < Gmap.KeyFDATA.size(); j++)
         {
             if(j != idx_KF)
             {
-              for( int k = 0; k < Gmap.KeyFDATA[j].Idx_Matched_points.size(); k++)
+              for( int k = 0; k < Gmap.KeyFDATA[j].Matched_landmark_ids.size(); k++)
               {
-                  if(Gmap.KeyFDATA[j].Idx_Matched_points[k] == idx_pt)
+                  if(Gmap.KeyFDATA[j].Matched_landmark_ids[k] == lid)
                   {
                     Gmap.Vgraph.at(idx_KF,j)++;
                     Gmap.Vgraph.at(j,idx_KF)++;
@@ -127,9 +134,13 @@ void CLOOP::Update_Visibility_Graph_with_new_KF(int idx_KF)
   // -----for taking into account the visual link with 0-kf
   if(idx_KF == 2)
   {
-    for(int i = 0; i < Gmap.KeyFDATA[idx_KF-1].Idx_Matched_points.size();i++)
+    for(int i = 0; i < Gmap.KeyFDATA[idx_KF-1].Matched_landmark_ids.size();i++)
     {
-      int64 idx_pt = Gmap.KeyFDATA[idx_KF-1].Idx_Matched_points[i];
+      const LandmarkId lid = Gmap.KeyFDATA[idx_KF-1].Matched_landmark_ids[i];
+      std::size_t idx_pt = 0;
+      if (!gmap_landmark_id::resolve_landmark_index(Gmap, lid, idx_pt)) {
+        continue;
+      }
 
       int idx_init_kf = Gmap.AnchorsDATA[idx_pt].init_KF;
 
@@ -142,15 +153,15 @@ void CLOOP::Update_Visibility_Graph_with_new_KF(int idx_KF)
   }
   //----------------------------------------------------------
 
-  for(int i = 0; i < Gmap.KeyFDATA[idx_KF].Idx_Matched_points.size();i++)
+  for(int i = 0; i < Gmap.KeyFDATA[idx_KF].Matched_landmark_ids.size();i++)
   {
-      int64 idx_pt = Gmap.KeyFDATA[idx_KF].Idx_Matched_points[i];
+      const LandmarkId lid = Gmap.KeyFDATA[idx_KF].Matched_landmark_ids[i];
 
       for (int j = 0; j < Gmap.KeyFDATA.size()-1 ; j++)
       {
-        for(int k = 0; k < Gmap.KeyFDATA[j].Idx_Matched_points.size();k++)
+        for(int k = 0; k < Gmap.KeyFDATA[j].Matched_landmark_ids.size();k++)
         {
-           if (idx_pt == Gmap.KeyFDATA[j].Idx_Matched_points[k])
+           if (lid == Gmap.KeyFDATA[j].Matched_landmark_ids[k])
            {
              vg_row[j]++;
              break;
@@ -159,9 +170,6 @@ void CLOOP::Update_Visibility_Graph_with_new_KF(int idx_KF)
         }
 
       }
-      //int idx_init_kf = Gmap.AnchorsDATA[idx_pt].init_KF;
-
-      //vg_row[idx_init_kf]++;
 
   }
   

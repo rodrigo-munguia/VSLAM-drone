@@ -503,7 +503,7 @@ inline void flush_kf(const GLOBAL_MAP & Gmap, double update_time_s)
 
   int64_t n_obs = 0;
   for (const auto & kf : Gmap.KeyFDATA) {
-    n_obs += static_cast<int64_t>(kf.Idx_Matched_points.size());
+    n_obs += static_cast<int64_t>(kf.Matched_landmark_ids.size());
   }
 
   const int n_after = static_cast<int>(Gmap.AnchorsDATA.size());

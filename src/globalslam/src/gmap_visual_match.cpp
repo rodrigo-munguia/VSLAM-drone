@@ -1,6 +1,7 @@
 #include "gmap.hpp"
 #include "gmap_landmark_audit_log.hpp"
 #include "gmap_map_mgmt_audit.hpp"
+#include "gmap_landmark_identity.hpp"
 
 #include <chrono>
 
@@ -84,9 +85,10 @@ void GMAP::Match_Gmap_points_into_new_KF()
             double max_inov_error = (double)PAR.VM_max_inov_error;
             if(dis < max_inov_error)
               {
-                int64 Idx_matched_A = Idx_candidate_A[Descriptor_idx_A]; // get index of the matched map point (anchor)
+                int64 Idx_matched_A = Idx_candidate_A[Descriptor_idx_A]; // storage index of matched map point
 
-                Gmap.KeyFDATA[idx_KF].Idx_Matched_points.push_back(Idx_matched_A); // Add the index of the matched map point to the list of Kf matched points
+                Gmap.KeyFDATA[idx_KF].Matched_landmark_ids.push_back(
+                  Gmap.AnchorsDATA[Idx_matched_A].id);
                 Gmap.KeyFDATA[idx_KF].UV_Matched_points.push_back(pt_m);
                 
                 Gmap.AnchorsDATA[Idx_matched_A].n_kf_matched++;
@@ -112,7 +114,7 @@ void GMAP::Match_Gmap_points_into_new_KF()
     gmap_map_mgmt_audit::census_association(
       Gmap, idx_KF, idx_kf_min_ref_for_search_matches, cam_parameters,
       PAR.VM_max_inov_error,
-      static_cast<int>(Gmap.KeyFDATA[idx_KF].Idx_Matched_points.size()),
+      static_cast<int>(Gmap.KeyFDATA[idx_KF].Matched_landmark_ids.size()),
       uv_matched);
     const auto match_t1 = std::chrono::steady_clock::now();
     gmap_map_mgmt_audit::note_match_time(
@@ -206,7 +208,8 @@ void GMAP::Match_New_points_into_previous_KF(std::vector<int64> &idx_new_points,
                     double max_inov_error = (double)PAR.VM_max_inov_error;
                     if(dis < max_inov_error)
                     {
-                      Gmap.KeyFDATA[idx_kf_target].Idx_Matched_points.push_back(idx_new_pt); // Add the index of the matched map point to the list of Kf matched points
+                      Gmap.KeyFDATA[idx_kf_target].Matched_landmark_ids.push_back(
+                        Gmap.AnchorsDATA[idx_new_pt].id);
                       Gmap.KeyFDATA[idx_kf_target].UV_Matched_points.push_back(pt_m);
                 
                       Gmap.AnchorsDATA[idx_new_pt].n_kf_matched++; 
