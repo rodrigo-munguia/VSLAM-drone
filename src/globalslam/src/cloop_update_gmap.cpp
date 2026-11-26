@@ -1,5 +1,6 @@
 #include "cloop.hpp"
 #include "g6b_cl_match_index.hpp"
+#include "gmap_graph_correction.hpp"
 #include "gmap_visual_sync.hpp"
 
 
@@ -36,27 +37,9 @@ void CLOOP::Update_gmap(arma::vec::fixed<3> &pos, KEYFRAME &kf_cl,int &idx_kf_ma
        return;
      }
 
-    // update kf position
-    for(int i = 0 ; i < idx_kf_opt.size() ; i++)
-    {
-        int idx_kf = idx_kf_opt[i];
-        Gmap.KeyFDATA[idx_kf].t_c2n += delta_kf_pos[i];
-
-    }
-    // Update Point position
-    for(int i = Gmap.AnchorsDATA.size()-1; i >= 0; i--)
-    {
-        int idx_init_kf = Gmap.AnchorsDATA[i].init_KF;
-
-        auto it = find(idx_kf_opt.begin(), idx_kf_opt.end(), idx_init_kf);
-
-        if(it != idx_kf_opt.end())
-        {
-          int index = it - idx_kf_opt.begin();
-           Gmap.AnchorsDATA[i].AnchorState += delta_kf_pos[index];
-        }
-
-    }
+    // M7.3: explicit-map landmark/KF geometry apply (same equations as before).
+    gmap_graph_correction::apply_pose_slam_geometry(
+      Gmap, delta_kf_pos, idx_kf_opt);
 
     // Pose-graph reference used as home-tag matched-KF fallback (before bump).
     const int idx_ref_before_bump = Gmap.idx_ref_pose_slam;

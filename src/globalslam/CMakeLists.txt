@@ -141,6 +141,7 @@ set(GLOBALSLAM_COMPONENT_SOURCES
   ../common/Transforms/Euler_to_Ra2b.cpp
   src/cloop_update_gmap.cpp
   src/cloop_pose_slam.cpp
+  src/gmap_graph_correction.cpp
   src/cloop_fuse_points.cpp
   src/cloop_update_gmap_with_new_matches.cpp
   src/cloop_bundle_adjustment.cpp)
@@ -297,6 +298,22 @@ if(BUILD_TESTING)
       ament_target_dependencies(test_gmap_landmark_identity_m6 OpenCV)
       target_link_libraries(test_gmap_landmark_identity_m6
         ${BLAS_LIBRARIES} ${LAPACK_LIBRARIES})
+    endif()
+    # GSLAM-MAP-ARCH-M7.3: reusable Pose_SLAM / landmark δ / post-loop BA.
+    ament_add_gtest(test_gmap_graph_correction_m7_3
+      test/test_gmap_graph_correction_m7_3.cpp
+      src/gmap_graph_correction.cpp
+      ../common/Vision/vision.cpp)
+    if(TARGET test_gmap_graph_correction_m7_3)
+      target_include_directories(test_gmap_graph_correction_m7_3 PRIVATE src ../common)
+      ament_target_dependencies(test_gmap_graph_correction_m7_3 OpenCV)
+      if(TARGET gtsam)
+        target_link_libraries(test_gmap_graph_correction_m7_3
+          gtsam ${BLAS_LIBRARIES} ${LAPACK_LIBRARIES} ${OpenCV_LIBS})
+      elseif(TARGET GTSAM::gtsam)
+        target_link_libraries(test_gmap_graph_correction_m7_3
+          GTSAM::gtsam ${BLAS_LIBRARIES} ${LAPACK_LIBRARIES} ${OpenCV_LIBS})
+      endif()
     endif()
     ament_add_gtest(test_gmap_relative_kf_init
       test/test_gmap_relative_kf_init.cpp)
