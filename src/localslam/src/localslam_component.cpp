@@ -14,6 +14,7 @@
 
 #include "localslam_component.hpp"
 #include "visual_profile.hpp"
+#include "dynamic_diag.hpp"
 
 #include <chrono>
 #include <iostream>
@@ -616,6 +617,15 @@ void EKFslam::EKF_LOOP()
             localslam::visual_profile::write_databuffer_row(
               diag_frames_enqueued_, diag_frames_overwritten_, diag_frames_consumed_,
               diag_frames_callback_rx_);
+          }
+        }
+        // LSLAM-DYNAMIC-CONSISTENCY-A3: opt-in stage CSV flush (disabled unless env set).
+        if (localslam::dynamic_diag::enabled()) {
+          static auto next_dd = std::chrono::steady_clock::now();
+          const auto now_dd = std::chrono::steady_clock::now();
+          if (now_dd >= next_dd) {
+            next_dd = now_dd + std::chrono::seconds(1);
+            localslam::dynamic_diag::flush();
           }
         }
 

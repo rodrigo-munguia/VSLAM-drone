@@ -1,5 +1,6 @@
 #include "ekf.hpp"
 #include "ls_pos_apply_policy.hpp"
+#include "dynamic_diag.hpp"
 #include "../../common/Transforms/Euler_to_Ra2b.hpp"
 #include "../../common/Transforms/Ra2b_TO_Quat_a2b.hpp"
 #include "../../common/Transforms/AngleWrap.hpp"
@@ -260,8 +261,26 @@ void EKF::ekf_step(DATA &dat)
              // cout << delta_t << endl;
      
               if(receiving_data && PAR.Prediction_model == "noise_driven")
-              {               
+              {
+                localslam::dynamic_diag::Row pred_b;
+                if (localslam::dynamic_diag::enabled()) {
+                  pred_b.mono_ms = localslam::dynamic_diag::mono_ms_now();
+                  pred_b.stage = "PRED";
+                  pred_b.phase = "before";
+                  pred_b.pred_dt = delta_t;
+                  pred_b.meas_time_ms = dat.time;
+                  localslam::dynamic_diag::snapshot_state(pred_b, x, P);
+                  localslam::dynamic_diag::push(pred_b);
+                }
                 prediction_euler_noise_driven(delta_t); // if data is been received, perform EKF prediction
+                if (localslam::dynamic_diag::enabled()) {
+                  localslam::dynamic_diag::Row pred_a = pred_b;
+                  pred_a.mono_ms = localslam::dynamic_diag::mono_ms_now();
+                  pred_a.phase = "after";
+                  localslam::dynamic_diag::snapshot_state(pred_a, x, P);
+                  localslam::dynamic_diag::fill_deltas(pred_a, pred_b);
+                  localslam::dynamic_diag::push(pred_a);
+                }
                 total_exec_time =  total_exec_time + delta_t;
                 //cout << "LocalSLAM -> " << total_exec_time << endl;
               }
@@ -335,7 +354,24 @@ void EKF::ekf_step(DATA &dat)
               
                ct_i = std::chrono::high_resolution_clock::now();  
 
+               localslam::dynamic_diag::Row vis_b;
+               if (localslam::dynamic_diag::enabled()) {
+                 vis_b.mono_ms = localslam::dynamic_diag::mono_ms_now();
+                 vis_b.stage = "VIS";
+                 vis_b.phase = "before";
+                 vis_b.meas_time_ms = dat.frame.time != 0 ? dat.frame.time : dat.time;
+                 localslam::dynamic_diag::snapshot_state(vis_b, x, P);
+                 localslam::dynamic_diag::push(vis_b);
+               }
                if(PAR.Visual_update)Visual_update_e(&dat.frame);
+               if (localslam::dynamic_diag::enabled()) {
+                 localslam::dynamic_diag::Row vis_a = vis_b;
+                 vis_a.mono_ms = localslam::dynamic_diag::mono_ms_now();
+                 vis_a.phase = "after";
+                 localslam::dynamic_diag::snapshot_state(vis_a, x, P);
+                 localslam::dynamic_diag::fill_deltas(vis_a, vis_b);
+                 localslam::dynamic_diag::push(vis_a);
+               }
 
                auto ct_f = std::chrono::high_resolution_clock::now();
                auto elapsed = std::chrono::duration_cast<std::chrono::nanoseconds>(ct_f - ct_i);
@@ -358,7 +394,24 @@ void EKF::ekf_step(DATA &dat)
             if(dat.data_type == "alt")
             {
               //cout << "Altitude:" << dat.alt.altitude << endl;
-              if(PAR.Altitude_update)Altitude_update(dat.alt);              
+              localslam::dynamic_diag::Row alt_b;
+              if (localslam::dynamic_diag::enabled() && PAR.Altitude_update) {
+                alt_b.mono_ms = localslam::dynamic_diag::mono_ms_now();
+                alt_b.stage = "ALT";
+                alt_b.phase = "before";
+                alt_b.meas_time_ms = dat.alt.time != 0 ? dat.alt.time : dat.time;
+                localslam::dynamic_diag::snapshot_state(alt_b, x, P);
+                localslam::dynamic_diag::push(alt_b);
+              }
+              if(PAR.Altitude_update)Altitude_update(dat.alt);
+              if (localslam::dynamic_diag::enabled() && PAR.Altitude_update) {
+                localslam::dynamic_diag::Row alt_a = alt_b;
+                alt_a.mono_ms = localslam::dynamic_diag::mono_ms_now();
+                alt_a.phase = "after";
+                localslam::dynamic_diag::snapshot_state(alt_a, x, P);
+                localslam::dynamic_diag::fill_deltas(alt_a, alt_b);
+                localslam::dynamic_diag::push(alt_a);
+              }
 
             }
             if(dat.data_type == "speed")
@@ -375,14 +428,48 @@ void EKF::ekf_step(DATA &dat)
               //cout << "roll: " << dat.att.roll*(180/3.1416) <<  " pitch: " << dat.att.pitch*(180/3.1416)  << " yaw: " << dat.att.yaw*(180/3.1416) <<endl;
               //cout << "sum_dt " << sum_dt << endl; 
               //cout << "b: " << x(0) << " " << x(1)*(180/3.1416) << " " << x(2)*(180/3.1416) << " "<<  x(3)*(180/3.1416) << endl;
+              localslam::dynamic_diag::Row att_b;
+              if (localslam::dynamic_diag::enabled() && PAR.Attitude_update) {
+                att_b.mono_ms = localslam::dynamic_diag::mono_ms_now();
+                att_b.stage = "AHRS";
+                att_b.phase = "before";
+                att_b.meas_time_ms = dat.att.time != 0 ? dat.att.time : dat.time;
+                localslam::dynamic_diag::snapshot_state(att_b, x, P);
+                localslam::dynamic_diag::push(att_b);
+              }
               if(PAR.Attitude_update)Attitude_euler_Update(dat.att);
+              if (localslam::dynamic_diag::enabled() && PAR.Attitude_update) {
+                localslam::dynamic_diag::Row att_a = att_b;
+                att_a.mono_ms = localslam::dynamic_diag::mono_ms_now();
+                att_a.phase = "after";
+                localslam::dynamic_diag::snapshot_state(att_a, x, P);
+                localslam::dynamic_diag::fill_deltas(att_a, att_b);
+                localslam::dynamic_diag::push(att_a);
+              }
               //cout << "a: " << x(0) << " " << x(1)*(180/3.1416) << " " << x(2)*(180/3.1416) << " "<<  x(3)*(180/3.1416) << endl;              
 
             }
             
             if(dat.data_type == "rangetobase")
             {
+              localslam::dynamic_diag::Row rng_b;
+              if (localslam::dynamic_diag::enabled() && PAR.Rangetobase_update) {
+                rng_b.mono_ms = localslam::dynamic_diag::mono_ms_now();
+                rng_b.stage = "RANGE";
+                rng_b.phase = "before";
+                rng_b.meas_time_ms = dat.rangetobase.time != 0 ? dat.rangetobase.time : dat.time;
+                localslam::dynamic_diag::snapshot_state(rng_b, x, P);
+                localslam::dynamic_diag::push(rng_b);
+              }
               if(PAR.Rangetobase_update)Rangetobase_update(dat.rangetobase);
+              if (localslam::dynamic_diag::enabled() && PAR.Rangetobase_update) {
+                localslam::dynamic_diag::Row rng_a = rng_b;
+                rng_a.mono_ms = localslam::dynamic_diag::mono_ms_now();
+                rng_a.phase = "after";
+                localslam::dynamic_diag::snapshot_state(rng_a, x, P);
+                localslam::dynamic_diag::fill_deltas(rng_a, rng_b);
+                localslam::dynamic_diag::push(rng_a);
+              }
                //cout << "Range to base: " << dat.rangetobase.range << endl;
 
             }

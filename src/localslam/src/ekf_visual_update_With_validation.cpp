@@ -107,7 +107,7 @@ void FeatPrediction(arma::vec &x, std::vector<FEAT> &FeatsDATA, std::vector<FEAT
                 FeatsDATA[idx].duv_dx = duv_dx;
                 FeatsDATA[idx].duv_dy = duv_dy;
                 hi(0) = FeatsDATA[idx].PredictedPoint.x;
-                hi(1) = FeatsDATA[idx].PredictedPoint.x;
+                hi(1) = FeatsDATA[idx].PredictedPoint.y;
                 zi(0) = FeatsDATA[idx].MatchedPoint.x;
                 zi(1) = FeatsDATA[idx].MatchedPoint.y;
                 Ri.zeros();
@@ -129,7 +129,7 @@ void FeatPrediction(arma::vec &x, std::vector<FEAT> &FeatsDATA, std::vector<FEAT
                 Hi(arma::span(0,1),arma::span(0,12)) = duv_dx;
                 AnchorsDATA[idx].duv_dx = duv_dx;
                 hi(0) = AnchorsDATA[idx].PredictedPoint.x;
-                hi(1) = AnchorsDATA[idx].PredictedPoint.x;
+                hi(1) = AnchorsDATA[idx].PredictedPoint.y;
                 zi(0) = AnchorsDATA[idx].MatchedPoint.x;
                 zi(1) = AnchorsDATA[idx].MatchedPoint.y;
                 Ri.zeros();

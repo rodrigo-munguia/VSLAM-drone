@@ -92,7 +92,7 @@
     Visual_delete_minimun_RatioMatched: 0.3    
     # visual update parameters
     Visual_update_use_1RANSAC_for_validation: true
-    Visual_update_attitude_update: false
+    Visual_update_attitude_update: true
     # If there is not speed measurements, "Visual_update_min_vel_for_update_feats" must be whichever negative value 
     Visual_update_min_vel_for_update_feats: -0.02
     Visual_update_use_anchors: true

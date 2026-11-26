@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import argparse
 import csv
+import math
 import os
 import threading
 import time
@@ -16,17 +17,39 @@ from pathlib import Path as FsPath
 import numpy as np
 import rclpy
 from geometry_msgs.msg import PointStamped
+from geometry_msgs.msg import TwistWithCovarianceStamped
+from interfaces.msg import Att
 from interfaces.msg import GlobalLoopCommitted
 from nav_msgs.msg import Odometry
 from nav_msgs.msg import Path as NavPath
 from rclpy.node import Node
 from rclpy.qos import DurabilityPolicy, HistoryPolicy, QoSProfile, ReliabilityPolicy
+from sensor_msgs.msg import Imu
 from sensor_msgs.msg import PointCloud2
 from sensor_msgs_py import point_cloud2
 
 
 def _stamp_sec(stamp) -> float:
     return float(stamp.sec) + 1e-9 * float(stamp.nanosec)
+
+
+def _quat_to_rpy(x, y, z, w):
+    """ROS/Webots RPY (rad)."""
+    sinr = 2.0 * (w * x + y * z)
+    cosr = 1.0 - 2.0 * (x * x + y * y)
+    roll = math.atan2(sinr, cosr)
+    sinp = 2.0 * (w * y - z * x)
+    sinp = max(-1.0, min(1.0, sinp))
+    pitch = math.asin(sinp)
+    siny = 2.0 * (w * z + x * y)
+    cosy = 1.0 - 2.0 * (y * y + z * z)
+    yaw = math.atan2(siny, cosy)
+    return roll, pitch, yaw
+
+
+def _rpy_to_internal(roll, pitch, yaw):
+    """Match LocalSLAM / legacy Att internal convention (pitch/yaw negated)."""
+    return roll, -pitch, -yaw
 
 
 class A3cRecorder(Node):
@@ -36,6 +59,11 @@ class A3cRecorder(Node):
         self.lock = threading.Lock()
         self.gt = []  # (t, x, y, z)
         self.odom = []  # (t, x, y, z)
+        # A3.1 extensions (observational only; GT never enters estimator)
+        self.gt_imu = []  # raw /imu → internal RPY + ang vel
+        self.ahrs = []  # Attitude_topic (noisy AHRS fed to LocalSLAM)
+        self.odom_full = []  # odom pose+twist+internal att
+        self.body_vel = []  # body linear velocity twist
         self.global_path_snaps = []  # list of (t_recv, map_revision_hint, Nx3)
         self.last_global_path = None
         self.last_global_path_txyz = None  # Nx4 (source stamp, x, y, z) when available
@@ -71,18 +99,73 @@ class A3cRecorder(Node):
         self.create_subscription(
             GlobalLoopCommitted, '/gslam/global_loop_committed', self._on_commit, qos_path
         )
-        self.get_logger().info(f'A3c recorder writing to {out_dir}')
+        # GT attitude: raw Webots IMU (before bridge Att noise)
+        self.create_subscription(Imu, '/imu', self._on_gt_imu, qos_rel)
+        self.create_subscription(Imu, '/imu', self._on_gt_imu, qos_best)
+        # AHRS measurement actually consumed by LocalSLAM (legacy Att)
+        self.create_subscription(Att, '/Attitude_topic', self._on_ahrs, qos_rel)
+        self.create_subscription(
+            TwistWithCovarianceStamped, '/body_velocity', self._on_body_vel, qos_rel
+        )
+        self.create_subscription(
+            TwistWithCovarianceStamped, '/body_velocity', self._on_body_vel, qos_best
+        )
+        self.get_logger().info(f'A3c recorder writing to {out_dir} (A3.1 att/vel enabled)')
 
     def _on_gt(self, msg: PointStamped):
         t = _stamp_sec(msg.header.stamp)
         with self.lock:
             self.gt.append((t, msg.point.x, msg.point.y, msg.point.z))
 
+    def _on_gt_imu(self, msg: Imu):
+        t = _stamp_sec(msg.header.stamp)
+        q = msg.orientation
+        roll, pitch, yaw = _quat_to_rpy(q.x, q.y, q.z, q.w)
+        ir, ip, iy = _rpy_to_internal(roll, pitch, yaw)
+        w = msg.angular_velocity
+        with self.lock:
+            self.gt_imu.append(
+                (t, ir, ip, iy, roll, pitch, yaw, w.x, w.y, w.z)
+            )
+
+    def _on_ahrs(self, msg: Att):
+        # Att.time is ms; prefer header-less message time field when stamp absent
+        t = float(msg.time) * 1e-3 if msg.time else time.time()
+        with self.lock:
+            self.ahrs.append((t, float(msg.roll), float(msg.pitch), float(msg.yaw), int(msg.time)))
+
+    def _on_body_vel(self, msg: TwistWithCovarianceStamped):
+        t = _stamp_sec(msg.header.stamp)
+        v = msg.twist.twist.linear
+        with self.lock:
+            self.body_vel.append((t, v.x, v.y, v.z))
+
     def _on_odom(self, msg: Odometry):
         t = _stamp_sec(msg.header.stamp)
         p = msg.pose.pose.position
+        q = msg.pose.pose.orientation
+        roll, pitch, yaw = _quat_to_rpy(q.x, q.y, q.z, q.w)
+        ir, ip, iy = _rpy_to_internal(roll, pitch, yaw)
+        tw = msg.twist.twist
         with self.lock:
             self.odom.append((t, p.x, p.y, p.z))
+            self.odom_full.append(
+                (
+                    t,
+                    p.x,
+                    p.y,
+                    p.z,
+                    ir,
+                    ip,
+                    iy,
+                    tw.linear.x,
+                    tw.linear.y,
+                    tw.linear.z,
+                    tw.angular.x,
+                    tw.angular.y,
+                    tw.angular.z,
+                )
+            )
 
     def _path_xyz(self, path: NavPath) -> np.ndarray:
         if not path.poses:
@@ -175,6 +258,20 @@ class A3cRecorder(Node):
         with self.lock:
             gt = np.array(self.gt, dtype=np.float64) if self.gt else np.zeros((0, 4))
             odom = np.array(self.odom, dtype=np.float64) if self.odom else np.zeros((0, 4))
+            gt_imu = (
+                np.array(self.gt_imu, dtype=np.float64) if self.gt_imu else np.zeros((0, 10))
+            )
+            ahrs = np.array(self.ahrs, dtype=np.float64) if self.ahrs else np.zeros((0, 5))
+            odom_full = (
+                np.array(self.odom_full, dtype=np.float64)
+                if self.odom_full
+                else np.zeros((0, 13))
+            )
+            body_vel = (
+                np.array(self.body_vel, dtype=np.float64)
+                if self.body_vel
+                else np.zeros((0, 4))
+            )
             commits = list(self.commits)
             snaps = list(self.global_path_snaps)
             last = None if self.last_global_path is None else self.last_global_path.copy()
@@ -215,6 +312,56 @@ class A3cRecorder(Node):
             w = csv.writer(f)
             w.writerow(['t', 'x', 'y', 'z'])
             w.writerows(odom.tolist())
+        # A3.1: GT IMU attitude (internal + ROS RPY) and angular velocity
+        with (self.out_dir / 'gt_att.csv').open('w', newline='') as f:
+            w = csv.writer(f)
+            w.writerow(
+                [
+                    't',
+                    'roll_i',
+                    'pitch_i',
+                    'yaw_i',
+                    'roll_ros',
+                    'pitch_ros',
+                    'yaw_ros',
+                    'wx',
+                    'wy',
+                    'wz',
+                ]
+            )
+            if len(gt_imu):
+                w.writerows(gt_imu.tolist())
+        with (self.out_dir / 'ahrs.csv').open('w', newline='') as f:
+            w = csv.writer(f)
+            w.writerow(['t', 'roll', 'pitch', 'yaw', 'time_ms'])
+            if len(ahrs):
+                w.writerows(ahrs.tolist())
+        with (self.out_dir / 'odom_full.csv').open('w', newline='') as f:
+            w = csv.writer(f)
+            w.writerow(
+                [
+                    't',
+                    'x',
+                    'y',
+                    'z',
+                    'roll_i',
+                    'pitch_i',
+                    'yaw_i',
+                    'vx',
+                    'vy',
+                    'vz',
+                    'wx',
+                    'wy',
+                    'wz',
+                ]
+            )
+            if len(odom_full):
+                w.writerows(odom_full.tolist())
+        with (self.out_dir / 'body_vel.csv').open('w', newline='') as f:
+            w = csv.writer(f)
+            w.writerow(['t', 'vx', 'vy', 'vz'])
+            if len(body_vel):
+                w.writerows(body_vel.tolist())
         # Timestamped Global KF path (public body origin; G4 per-pose stamps).
         with (self.out_dir / 'global_kf.csv').open('w', newline='') as f:
             w = csv.writer(f)
@@ -316,7 +463,8 @@ class A3cRecorder(Node):
             np.save(self.out_dir / 'global_landmarks_final.npy', last_lm)
 
         summary = (
-            f'gt={len(gt)} odom={len(odom)} commits={len(commits)} '
+            f'gt={len(gt)} odom={len(odom)} gt_att={len(gt_imu)} ahrs={len(ahrs)} '
+            f'odom_full={len(odom_full)} body_vel={len(body_vel)} commits={len(commits)} '
             f'global_snaps={len(snaps)} final_gkf={0 if last is None else len(last)}\n'
         )
         (self.out_dir / 'recorder_summary.txt').write_text(summary)

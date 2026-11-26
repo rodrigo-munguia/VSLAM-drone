@@ -596,11 +596,15 @@ void Jac_e_uv_XYZ(arma::vec::fixed<3> pxyz, arma::vec& x, CAM &camera_parameters
   arma::mat::fixed<3,3> dPc_de; 
   if(Visual_update_attitude_update == true)
   {
-
+    // pc = Rn2c * pnr - Rr2c * t_c2r,  Rn2c = Rr2c * Rn2r
+    // => ∂pc/∂e = Rr2c * ∂(Rn2r * pnr)/∂e
+    // Jac_euler_2_rotMat_by_P computes ∂(Rr2n * p)/∂e (nav←robot), which is
+    // the wrong factor here; use the transpose helper for ∂(Rn2r * p)/∂e.
+    // (Horizontal-plane init correctly uses by_P for Rr2n paths — do not swap
+    // that shared helper's convention.)
     arma::mat::fixed<3,3> dfp_de;
-    Jac_euler_2_rotMat_by_P(dfp_de, pnr,phi, theta, psi); 
-    //Jac_euler_2_rotMat_by_P(dfp_de, pnr,phi, theta, psi);   
-    dPc_de = Rr2c*dfp_de;
+    Jac_euler_2_rotMat_transpose_by_P(dfp_de, pnr, phi, theta, psi);
+    dPc_de = Rr2c * dfp_de;
 
   }
   else

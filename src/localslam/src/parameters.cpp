@@ -98,7 +98,7 @@ void EKFslam::setParameters()
    this->declare_parameter<int>("Visual_delete_minimun_feats_in_state_before_delete",50);   
    this->declare_parameter<double>("Visual_delete_minimun_RatioMatched",0.3);   
    this->declare_parameter<bool>("Visual_update_use_1RANSAC_for_validation",false);
-   this->declare_parameter<bool>("Visual_update_attitude_update",false);
+   this->declare_parameter<bool>("Visual_update_attitude_update",true);
    this->declare_parameter<double>("Visual_update_min_vel_for_update_feats",0.02);   
    this->declare_parameter<bool>("Visual_update_use_anchors",true);
    this->declare_parameter<double>("Visual_update_uncertainty_depth_anchor_init",0.07);

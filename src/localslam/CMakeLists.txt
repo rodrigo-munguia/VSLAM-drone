@@ -178,6 +178,22 @@ if(BUILD_TESTING)
       target_link_libraries(test_range_horizontal_plane_init localslam_component)
       target_include_directories(test_range_horizontal_plane_init PRIVATE src ../common)
     endif()
+
+    # LSLAM-DYNAMIC-CONSISTENCY-A2: Jac_e_uv_XYZ FD + attitude coupling.
+    ament_add_gtest(test_visual_jacobian_attitude_coupling_a2
+      test/test_visual_jacobian_attitude_coupling_a2.cpp)
+    if(TARGET test_visual_jacobian_attitude_coupling_a2)
+      target_link_libraries(test_visual_jacobian_attitude_coupling_a2 localslam_component)
+      target_include_directories(test_visual_jacobian_attitude_coupling_a2 PRIVATE src ../common)
+    endif()
+
+    # LSLAM-DYNAMIC-CONSISTENCY-A2.2: FeatPrediction hi(1) = PredictedPoint.y.
+    ament_add_gtest(test_ransac_feat_prediction_a2_2
+      test/test_ransac_feat_prediction_a2_2.cpp)
+    if(TARGET test_ransac_feat_prediction_a2_2)
+      target_link_libraries(test_ransac_feat_prediction_a2_2 localslam_component)
+      target_include_directories(test_ransac_feat_prediction_a2_2 PRIVATE src ../common)
+    endif()
   endif()
 endif()
 

@@ -101,7 +101,7 @@
     Visual_delete_minimun_feats_in_state_before_delete: 50
     Visual_delete_minimun_RatioMatched: 0.3
     Visual_update_use_1RANSAC_for_validation: true
-    Visual_update_attitude_update: false
+    Visual_update_attitude_update: true
     Visual_update_min_vel_for_update_feats: 0.1
     Visual_update_use_anchors: true
     Visual_update_uncertainty_depth_anchor_init: 0.08
