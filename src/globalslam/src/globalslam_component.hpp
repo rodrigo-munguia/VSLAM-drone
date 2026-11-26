@@ -155,12 +155,13 @@ private:
   rclcpp::Publisher<sensor_msgs::msg::PointCloud2>::SharedPtr pub_global_landmarks_;
   rclcpp::Publisher<interfaces::msg::GlobalLoopCommitted>::SharedPtr
     pub_global_loop_committed_;
-  void Publish_gmap_data();
-  /** Copy committed Gmap under lock; serialize/publish Path+cloud unlocked. */
+  void Publish_gmap_data_from(const GLOBAL_MAP & map);
+  /** Copy committed map geometry under lock; serialize/publish unlocked. */
   void Publish_standard_viz(uint64_t generation);
   /** Latch empty Path/cloud for late subscribers after reset/ref change. */
   void Publish_empty_standard_viz(uint64_t generation);
-  bool Capture_map_snapshot_locked(g4_viz::MapSnapshot & snap, uint64_t generation);
+  bool Capture_map_snapshot_locked(
+    const GLOBAL_MAP & map, g4_viz::MapSnapshot & snap, uint64_t generation);
 
   void setParameters();
 
@@ -175,12 +176,18 @@ private:
   uint32_t correction_boot_nonce_{0};
   std::atomic<uint32_t> next_correction_seq_{1};
 
-  GLOBAL_MAP Gmap;
+  /**
+   * M7.5: single persistent authoritative GMAP lives on the GMAP worker.
+   * Pointer is set for the worker lifetime; access only under mutex_get_gm.
+   */
+  GMAP * auth_gmap_{nullptr};
+  /** Monotonic seq bumped after each coherent authoritative mutation batch. */
+  uint64_t auth_map_seq_{0};
+  uint64_t cloop_last_extract_seq_{0};
 
   std::vector<KEYFRAME> Kf_buffer;
   KEYFRAME kf_cl_last;
   bool new_kf_cl{false};
-  bool gmap_updated{false};
 
   parameters PAR;
   bool accept_missing_source_stamp_{false};
@@ -206,7 +213,9 @@ private:
   std::unordered_set<uint64_t> seen_keyframe_ids_;
 
   // Lock order (never invert): run_ctrl_ → rx_kf → rx_kf_cl → get_gm → logs/flags.
+  // mutex_get_gm guards authoritative GMAP mutations + owned extracts (M7.5).
   // mutex_run_ctrl_ also guards active_ref_ / seen_keyframe_ids_.
+  // Never hold mutex_get_gm while waiting on services / proposal outcomes / ROS.
   std::mutex mutex_run_ctrl_;
   std::mutex mutex_rx_kf;
   std::mutex mutex_rx_kf_cl;

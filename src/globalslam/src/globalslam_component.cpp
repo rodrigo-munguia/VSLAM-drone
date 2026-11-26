@@ -23,6 +23,7 @@
 #include "gmap.hpp"
 #include "gmap_landmark_identity.hpp"
 #include "gmap_map_clone.hpp"
+#include "gmap_authoritative_read.hpp"
 #include "gmap_authoritative_loop.hpp"
 #include "gmap_deferred_proposal.hpp"
 #include "gmap_loop_proposal.hpp"
@@ -108,7 +109,6 @@ Gslam::Gslam(const rclcpp::NodeOptions & options)
   }
 
   // Flags before workers start (workers read these).
-  gmap_updated = false;
   new_kf_cl = false;
   loop_closed_flag = false;
   gmap_get_log_flag = false;
@@ -175,8 +175,8 @@ void Gslam::clear_pending_keyframes_locked()
 {
   Kf_buffer.clear();
   new_kf_cl = false;
-  gmap_updated = false;
   loop_closed_flag = false;
+  cloop_last_extract_seq_ = 0;
   {
     std::lock_guard<std::mutex> lock(mutex_proposal_);
     proposal_slot_.reset();
@@ -208,10 +208,8 @@ void Gslam::clear_for_reference_change(const char * reason)
     gen = run_ctrl_.reset_generation;
     seen_keyframe_ids_.clear();
     clear_pending_keyframes_locked();
-    // M1/M2: clear landmarks/lookup; keep next_landmark_id watermark.
-    gmap_landmark_id::clear_landmark_storage(Gmap);
-    Gmap.KeyFDATA.clear();
-    Gmap.Vgraph.clear();
+    // Authoritative clear is performed on the GMAP worker via reinit + InitGmap.
+    ++auth_map_seq_;
   }
   {
     std::lock_guard<std::mutex> lock_q(mutex_home_capture_q_);
@@ -346,7 +344,10 @@ void Gslam::Process_authoritative_proposals(GMAP & gmap, uint64_t step_gen)
     return;
   }
   GLOBAL_MAP auth;
-  gmap.Get_GlobalMap(auth);
+  {
+    std::lock_guard<std::mutex> lock_gm(mutex_get_gm);
+    gmap.Extract_detection_snapshot(auth);
+  }
 
   std::vector<KEYFRAME> kf_buffer_snapshot;
   {
@@ -482,7 +483,7 @@ void Gslam::Process_authoritative_proposals(GMAP & gmap, uint64_t step_gen)
       outcome.reason = "generation_or_ref_mismatch";
     } else {
     gmap.Set_GlobalMap(*corr.workspace);
-    gmap.Get_GlobalMap(Gmap);  // ferry snapshot for viz / CLOOP refresh
+    ++auth_map_seq_;
     ++run_ctrl_.sources.map_revision;
     map_revision = run_ctrl_.sources.map_revision;
     ++correction_epoch_;
@@ -518,9 +519,6 @@ void Gslam::Process_authoritative_proposals(GMAP & gmap, uint64_t step_gen)
     return;
   }
 
-  // Refresh CLOOP detection snapshot from authoritative ferry (GMAP→CLOOP only).
-  gmap_updated = true;
-
   if (publish_committed_event) {
     Publish_global_loop_committed(
       send_prov, map_revision, prop->source_label, corr.p_G_final_closing,
@@ -548,6 +546,10 @@ void Gslam::Process_authoritative_proposals(GMAP & gmap, uint64_t step_gen)
 void Gslam::GMAP_LOOP()
 {
   GMAP gmap(PAR);
+  {
+    std::lock_guard<std::mutex> lock_gm(mutex_get_gm);
+    auth_gmap_ = &gmap;
+  }
   cout << "-> Global map thread running... " << endl;
   int c_kf = 0;
 
@@ -557,7 +559,9 @@ void Gslam::GMAP_LOOP()
     {
       std::lock_guard<std::mutex> lock_ctrl(mutex_run_ctrl_);
       if (run_ctrl_.consume_reinit_gmap()) {
+        std::lock_guard<std::mutex> lock_gm(mutex_get_gm);
         gmap.InitGmap();
+        ++auth_map_seq_;
         c_kf = 0;
         // map_lifetime_ / proposal invalidation already applied in reset path.
       }
@@ -566,7 +570,10 @@ void Gslam::GMAP_LOOP()
     }
 
     // LC-CONSISTENCY-A3: apply sync gate/rebase before draining new KFs.
-    Drain_visual_sync_cmd(gmap);
+    {
+      std::lock_guard<std::mutex> lock_gm(mutex_get_gm);
+      Drain_visual_sync_cmd(gmap);
+    }
 
     // M7.4: process proposals after sync drain, before ordinary Update batch.
     // No CLOOP→GMAP full-map writeback.
@@ -575,23 +582,28 @@ void Gslam::GMAP_LOOP()
 
     bool new_kf = false;
     CorrectionProvenance step_prov;
+    std::vector<KEYFRAME> kf_batch;
     if (processing) {
       std::lock_guard<std::mutex> lock_kf(mutex_rx_kf);
       if (!Kf_buffer.empty()) {
-        for (size_t i = 0; i < Kf_buffer.size(); i++) {
-          gmap.Add_Kf(Kf_buffer[i]);
-          // Provenance from the last KF in this batch (originating computation).
-          step_prov.session_id = Kf_buffer[i].session_id;
-          step_prov.epoch_id = Kf_buffer[i].epoch_id;
-          step_prov.keyframe_id = Kf_buffer[i].keyframe_id;
-        }
-        Kf_buffer.clear();
+        kf_batch.swap(Kf_buffer);
         new_kf = true;
       }
     }
 
     if (new_kf) {
-      gmap.Update();
+      {
+        std::lock_guard<std::mutex> lock_gm(mutex_get_gm);
+        for (size_t i = 0; i < kf_batch.size(); i++) {
+          gmap.Add_Kf(kf_batch[i]);
+          // Provenance from the last KF in this batch (originating computation).
+          step_prov.session_id = kf_batch[i].session_id;
+          step_prov.epoch_id = kf_batch[i].epoch_id;
+          step_prov.keyframe_id = kf_batch[i].keyframe_id;
+        }
+        gmap.Update();
+        ++auth_map_seq_;
+      }
 
       // Validate generation+enable and commit shared state under one critical
       // section. Capture any outbound correction decision here; send outside
@@ -600,6 +612,8 @@ void Gslam::GMAP_LOOP()
       // live EstimatorReference at send time.
       bool send_ba = false;
       bool publish_std = false;
+      bool publish_legacy = false;
+      GLOBAL_MAP legacy_pub_map;
       arma::vec::fixed<3> delta_pos;
       CorrectionProvenance send_prov = step_prov;
       send_prov.source = g6d::CorrectionSource::Ba;
@@ -614,11 +628,10 @@ void Gslam::GMAP_LOOP()
         if (commit) {
           const bool skip_for_cl = loop_closed_flag;
           if (!skip_for_cl) {
-            gmap.Get_GlobalMap(Gmap);
             if (c_kf % 4 == 0) {
-              Publish_gmap_data();
+              legacy_pub_map = gmap_map_clone::deep_clone(gmap.Authoritative_map());
+              publish_legacy = true;
             }
-            gmap_updated = true;
             publish_std = true;
             if (run_ctrl_.should_emit_for(g6d::CorrectionSource::Ba) &&
               !home_capture_active_)
@@ -638,6 +651,9 @@ void Gslam::GMAP_LOOP()
           }
           c_kf++;
         }
+      }
+      if (publish_legacy) {
+        Publish_gmap_data_from(legacy_pub_map);
       }
       // Serialize/publish standard Path+cloud outside worker locks.
       if (publish_std) {
@@ -659,6 +675,11 @@ void Gslam::GMAP_LOOP()
 
     std::this_thread::sleep_for(std::chrono::milliseconds(10));
   }
+
+  {
+    std::lock_guard<std::mutex> lock_gm(mutex_get_gm);
+    auth_gmap_ = nullptr;
+  }
 }
 
 void Gslam::CLOOP_LOOP()
@@ -669,23 +690,21 @@ void Gslam::CLOOP_LOOP()
   while (workers_run_) {
     uint64_t step_gen = 0;
     bool processing = false;
+    uint64_t life = 0;
+    uint64_t epoch = 0;
     {
       std::lock_guard<std::mutex> lock_ctrl(mutex_run_ctrl_);
       if (run_ctrl_.consume_reinit_cloop()) {
         cloop.CLOOP_init();
         cloop.Set_map_lifetime_and_epoch(map_lifetime_, correction_epoch_);
+        cloop_last_extract_seq_ = 0;
       }
       step_gen = run_ctrl_.reset_generation;
       processing = run_ctrl_.sources.processing_enabled;
+      life = map_lifetime_;
+      epoch = correction_epoch_;
     }
-
-    {
-      std::lock_guard<std::mutex> lock_gm(mutex_get_gm);
-      if (gmap_updated) {
-        gmap_updated = false;
-        cloop.Set_GlobalMap(Gmap);
-      }
-    }
+    (void)step_gen;
 
     bool have_cl_kf = false;
     KEYFRAME kf_cl;
@@ -840,10 +859,29 @@ void Gslam::CLOOP_LOOP()
         run_tag = run_ctrl_.sources.should_run_tag_loop();
         run_vis = run_ctrl_.sources.should_run_visual_loop();
       }
-      if (run_tag) {
-        cloop.Step2(kf_cl);
-      } else if (run_vis) {
-        cloop.Step(kf_cl);
+
+      // M7.5: owned extract under auth-map lock; matching/PnP outside lock.
+      if (run_tag || run_vis) {
+        GLOBAL_MAP extract;
+        bool got = false;
+        {
+          std::lock_guard<std::mutex> lock_gm(mutex_get_gm);
+          if (auth_gmap_ != nullptr) {
+            auth_gmap_->Extract_detection_snapshot(extract);
+            cloop_last_extract_seq_ = auth_map_seq_;
+            got = true;
+          }
+        }
+        if (got) {
+          cloop.Install_detection_extract(std::move(extract));
+          cloop.Set_map_lifetime_and_epoch(life, epoch);
+          if (run_tag) {
+            cloop.Step2(kf_cl);
+          } else {
+            cloop.Step(kf_cl);
+          }
+          cloop.Clear_detection_extract();
+        }
       }
 
       // M7.4: detection submits proposals; GMAP owns correction + sync.
@@ -1299,15 +1337,15 @@ void Gslam::Publish_global_loop_committed(
     match_ba_refine_ran ? 1 : 0);
 }
 
-void Gslam::Publish_gmap_data()
+void Gslam::Publish_gmap_data_from(const GLOBAL_MAP & map)
 {
   // Legacy custom Gmap (internal camera poses; no D). Retained during transition.
   // Prefer ~/global_keyframes + ~/global_landmarks for RViz2/Plot2.
   auto message = interfaces::msg::Gmap();
 
-  for (size_t i = 0; i < Gmap.KeyFDATA.size(); i++) {
-    arma::mat::fixed<3, 3> Rn2c = Gmap.KeyFDATA[i].Rn2c;
-    arma::vec::fixed<3> t_c2n = Gmap.KeyFDATA[i].t_c2n;
+  for (size_t i = 0; i < map.KeyFDATA.size(); i++) {
+    arma::mat::fixed<3, 3> Rn2c = map.KeyFDATA[i].Rn2c;
+    arma::vec::fixed<3> t_c2n = map.KeyFDATA[i].t_c2n;
 
     arma::vec::fixed<4> q_n2c;
     Ra2b_TO_Quat_a2b_arma(Rn2c, q_n2c);
@@ -1324,18 +1362,18 @@ void Gslam::Publish_gmap_data()
   }
 
   int j = PAR.GM_factor_anchors_sent_to_plot;
-  if (Gmap.AnchorsDATA.size() > 100) {
+  if (map.AnchorsDATA.size() > 100) {
     j = 10;
   }
   if (j < 1) {
     j = 1;
   }
 
-  for (size_t i = 0; i < Gmap.AnchorsDATA.size(); i = i + static_cast<size_t>(j)) {
+  for (size_t i = 0; i < map.AnchorsDATA.size(); i = i + static_cast<size_t>(j)) {
     geometry_msgs::msg::Point p;
-    p.x = Gmap.AnchorsDATA[i].AnchorState[0];
-    p.y = Gmap.AnchorsDATA[i].AnchorState[1];
-    p.z = Gmap.AnchorsDATA[i].AnchorState[2];
+    p.x = map.AnchorsDATA[i].AnchorState[0];
+    p.y = map.AnchorsDATA[i].AnchorState[1];
+    p.z = map.AnchorsDATA[i].AnchorState[2];
     message.gmap_anchors.push_back(p);
   }
 
@@ -1343,7 +1381,7 @@ void Gslam::Publish_gmap_data()
 }
 
 bool Gslam::Capture_map_snapshot_locked(
-  g4_viz::MapSnapshot & snap, uint64_t generation)
+  const GLOBAL_MAP & map, g4_viz::MapSnapshot & snap, uint64_t generation)
 {
   // Caller holds mutex_run_ctrl_ + mutex_get_gm.
   if (!run_ctrl_.results_belong_to_generation(generation)) {
@@ -1352,13 +1390,13 @@ bool Gslam::Capture_map_snapshot_locked(
   snap = g4_viz::MapSnapshot{};
   snap.generation = generation;
   snap.epoch_id = active_ref_.epoch_id;
-  snap.keyframes.reserve(Gmap.KeyFDATA.size());
-  for (const auto & kf : Gmap.KeyFDATA) {
+  snap.keyframes.reserve(map.KeyFDATA.size());
+  for (const auto & kf : map.KeyFDATA) {
     g4_viz::SnapshotKeyframe sk;
     // BA/CL revise camera pose (t_c2n, Rn2c) but leave r_N/Rn2r stale.
     // Reconstruct body from the committed camera pose + stored extrinsics:
-    //   Rn2c = Rr2c * Rn2r  ⇒  Rn2r = Rr2c^T * Rn2c
-    //   t_c2n = r_N + Rn2r^T * t_c2r  ⇒  r_N = t_c2n - Rn2r^T * t_c2r
+    //   Rn2c = Rr2c * Rn2r  =>  Rn2r = Rr2c^T * Rn2c
+    //   t_c2n = r_N + Rn2r^T * t_c2r  =>  r_N = t_c2n - Rn2r^T * t_c2r
     const arma::mat::fixed<3, 3> Rn2r = kf.Rr2c.t() * kf.Rn2c;
     const arma::vec::fixed<3> r_N = kf.t_c2n - Rn2r.t() * kf.t_c2r;
     sk.r_N[0] = r_N(0);
@@ -1378,8 +1416,8 @@ bool Gslam::Capture_map_snapshot_locked(
     sk.keyframe_id = kf.keyframe_id;
     snap.keyframes.push_back(sk);
   }
-  snap.landmarks.reserve(Gmap.AnchorsDATA.size());
-  for (const auto & a : Gmap.AnchorsDATA) {
+  snap.landmarks.reserve(map.AnchorsDATA.size());
+  for (const auto & a : map.AnchorsDATA) {
     g4_viz::SnapshotLandmark lm;
     lm.x = a.AnchorState(0);
     lm.y = a.AnchorState(1);
@@ -1395,7 +1433,12 @@ void Gslam::Publish_standard_viz(uint64_t generation)
   {
     std::lock_guard<std::mutex> lock_ctrl(mutex_run_ctrl_);
     std::lock_guard<std::mutex> lock_gm(mutex_get_gm);
-    if (!Capture_map_snapshot_locked(snap, generation)) {
+    if (auth_gmap_ == nullptr) {
+      return;
+    }
+    if (!Capture_map_snapshot_locked(
+        auth_gmap_->Authoritative_map(), snap, generation))
+    {
       return;
     }
   }

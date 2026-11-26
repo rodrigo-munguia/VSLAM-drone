@@ -91,6 +91,14 @@ class GMAP
         void Get_GlobalMap(GLOBAL_MAP &Gmap_c);
         void Set_GlobalMap(GLOBAL_MAP &Gmap_c);
 
+        /**
+         * M7.5: owned deep detection extract (caller holds auth-map mutex).
+         * Does not expose references into authoritative storage.
+         */
+        void Extract_detection_snapshot(GLOBAL_MAP & out) const;
+        /** Const view for publication extract under caller-held mutex. */
+        const GLOBAL_MAP & Authoritative_map() const { return Gmap; }
+
         arma::vec::fixed<3>  Get_delta_pos();
 
         /** Suspend map admits while Local feedback is in flight. */

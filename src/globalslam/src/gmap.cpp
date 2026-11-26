@@ -5,6 +5,7 @@
 #include "gmap_map_mgmt_audit.hpp"
 #include "gmap_landmark_identity.hpp"
 #include "gmap_identity_runtime_audit.hpp"
+#include "gmap_map_clone.hpp"
 
 
 //-------------------------------------------
@@ -80,6 +81,15 @@ void GMAP::Set_GlobalMap(GLOBAL_MAP &Gmap_c)
   gmap_landmark_id::assign_global_map_preserving_id_watermark(Gmap, Gmap_c);
   gmap_identity_runtime_audit::log_snapshot_event("gmap_set_post", Gmap, "authoritative");
   gmap_identity_runtime_audit::check_boundary("gmap_set_post", Gmap);
+}
+
+void GMAP::Extract_detection_snapshot(GLOBAL_MAP & out) const
+{
+  // Deep clone: OpenCV Mats must not alias authoritative storage after unlock.
+  out = gmap_map_clone::deep_clone(Gmap);
+  gmap_identity_runtime_audit::log_snapshot_event(
+    "gmap_extract_detection", out, "owned_detect");
+  gmap_identity_runtime_audit::check_boundary("gmap_extract_detection", out);
 }
 
 //------------------------------------------

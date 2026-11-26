@@ -3,15 +3,13 @@
 #include "gmap_identity_runtime_audit.hpp"
 
 #include <chrono>
+#include <utility>
 
 //-------------------------------------------
 // Init Cloop
 void CLOOP::CLOOP_init()
 { 
-  Gmap.idx_ref_pose_slam = 0;
-  gmap_landmark_id::clear_landmark_storage(Gmap);
-  Gmap.KeyFDATA.clear();
-  Gmap.Vgraph.clear();
+  Clear_detection_extract();
 
   cam_parameters.distortions = &PAR.Mono_cam_distortions[0];
   cam_parameters.cc[0] = PAR.Mono_cam_cc_u;
@@ -50,27 +48,22 @@ void CLOOP::CLOOP_init()
 
 }
 
-//------------------------------------------
-// Set global map
-// Rodrigo M. 20222
-void CLOOP::Set_GlobalMap(GLOBAL_MAP &Gmap_c)
+void CLOOP::Install_detection_extract(GLOBAL_MAP && owned)
 {
-  gmap_identity_runtime_audit::log_snapshot_event("cloop_set_pre_src", Gmap_c, "from_gmap");
-  gmap_identity_runtime_audit::log_snapshot_event("cloop_set_pre_dst", Gmap, "cloop_copy");
-  gmap_landmark_id::assign_global_map_preserving_id_watermark(Gmap, Gmap_c);
-  gmap_identity_runtime_audit::log_snapshot_event("cloop_set_post", Gmap, "cloop_copy");
-  gmap_identity_runtime_audit::check_boundary("cloop_set_post", Gmap);
+  Gmap = std::move(owned);
+  has_detection_extract_ = true;
+  gmap_identity_runtime_audit::log_snapshot_event(
+    "cloop_install_detect", Gmap, "owned_detect");
+  gmap_identity_runtime_audit::check_boundary("cloop_install_detect", Gmap);
 }
-//------------------------------------------
-// Set global map
-// Rodrigo M. 20222
-void CLOOP::Get_GlobalMap(GLOBAL_MAP &Gmap_c)
+
+void CLOOP::Clear_detection_extract()
 {
-  gmap_identity_runtime_audit::log_snapshot_event("cloop_get_pre", Gmap, "cloop_copy");
-  gmap_identity_runtime_audit::log_snapshot_event("cloop_get_pre_dst", Gmap_c, "gmap_auth");
-  gmap_landmark_id::assign_global_map_preserving_id_watermark(Gmap_c, Gmap);
-  gmap_identity_runtime_audit::log_snapshot_event("cloop_get_post", Gmap_c, "gmap_auth");
-  gmap_identity_runtime_audit::check_boundary("cloop_get_post", Gmap_c);
+  Gmap.idx_ref_pose_slam = 0;
+  gmap_landmark_id::clear_landmark_storage(Gmap);
+  Gmap.KeyFDATA.clear();
+  Gmap.Vgraph.clear();
+  has_detection_extract_ = false;
 }
 
 //------------------------------------------

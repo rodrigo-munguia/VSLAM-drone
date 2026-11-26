@@ -139,14 +139,11 @@ set(GLOBALSLAM_COMPONENT_SOURCES
   src/cloop_visual_match.cpp
   src/cloop_get_pos.cpp
   ../common/Transforms/Euler_to_Ra2b.cpp
-  src/cloop_update_gmap.cpp
-  src/cloop_pose_slam.cpp
   src/gmap_graph_correction.cpp
   src/gmap_authoritative_loop.cpp
-  src/gmap_post_loop_refine.cpp
-  src/cloop_fuse_points.cpp
-  src/cloop_update_gmap_with_new_matches.cpp
-  src/cloop_bundle_adjustment.cpp)
+  src/gmap_post_loop_refine.cpp)
+  # M7.5: cloop_update_gmap / pose_slam / fuse / BA wrappers removed from build
+  # (authoritative correction lives in gmap_* ; sources retained for audit only).
 
 add_library(globalslam_component SHARED ${GLOBALSLAM_COMPONENT_SOURCES})
 target_compile_definitions(globalslam_component PRIVATE "COMPOSITION_BUILDING_DLL")
@@ -351,6 +348,25 @@ if(BUILD_TESTING)
           gtsam ${BLAS_LIBRARIES} ${LAPACK_LIBRARIES} ${OpenCV_LIBS})
       elseif(TARGET GTSAM::gtsam)
         target_link_libraries(test_gmap_loop_refinement_lifecycle_m7_4_1
+          GTSAM::gtsam ${BLAS_LIBRARIES} ${LAPACK_LIBRARIES} ${OpenCV_LIBS})
+      endif()
+    endif()
+    # GSLAM-MAP-ARCH-M7.5: authoritative read / owned extract / OpenCV isolation.
+    ament_add_gtest(test_gmap_authoritative_read_m7_5
+      test/test_gmap_authoritative_read_m7_5.cpp
+      src/gmap_graph_correction.cpp
+      src/gmap_authoritative_loop.cpp
+      src/gmap_post_loop_refine.cpp
+      ../common/Vision/vision.cpp)
+    if(TARGET test_gmap_authoritative_read_m7_5)
+      target_include_directories(test_gmap_authoritative_read_m7_5
+        PRIVATE src ../common)
+      ament_target_dependencies(test_gmap_authoritative_read_m7_5 OpenCV)
+      if(TARGET gtsam)
+        target_link_libraries(test_gmap_authoritative_read_m7_5
+          gtsam ${BLAS_LIBRARIES} ${LAPACK_LIBRARIES} ${OpenCV_LIBS})
+      elseif(TARGET GTSAM::gtsam)
+        target_link_libraries(test_gmap_authoritative_read_m7_5
           GTSAM::gtsam ${BLAS_LIBRARIES} ${LAPACK_LIBRARIES} ${OpenCV_LIBS})
       endif()
     endif()

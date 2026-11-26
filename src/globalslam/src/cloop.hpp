@@ -36,7 +36,12 @@ class CLOOP
         
         
 
-        GLOBAL_MAP Gmap; // Global map structure
+        /**
+         * M7.5: ephemeral owned detection extract only (installed for Step/Step2).
+         * Empty outside an active detection step — not a persistent map replica.
+         */
+        GLOBAL_MAP Gmap;
+        bool has_detection_extract_{false};
 
         parameters PAR; // parameters structure
         
@@ -97,8 +102,6 @@ class CLOOP
         bool Get_pos_of_current_kf_from_Home_tag(arma::vec::fixed<3> &pos, KEYFRAME &kf_cl);
 
 
-        void Update_gmap(arma::vec::fixed<3> &pos, KEYFRAME &kf_cl,int &idx_kf_matched);
-
         /** M7.4: build proposal from verified geometry (no authoritative mutation). */
         bool Build_loop_proposal(
           arma::vec::fixed<3> & pos,
@@ -108,31 +111,34 @@ class CLOOP
           const std::vector<int> * inlier_corr_indices,
           const std::vector<int> * idx_pt_matches,
           const std::vector<cv::Point2d> * image_points);
-        
-        void Pose_SLAM(arma::vec::fixed<3> &pos, std::vector<arma::vec::fixed<3>> &delta_kf_pos, std::vector<int> &idx_kf_opt);
-        
+
+        // Detection helpers that remain compiled (visibility queries / ORB match).
+        // Correction orchestration (Update_gmap / Pose_SLAM / Fuse / BA) removed M7.5.
         void Match_Gmap_points_into_KF(int idx_KF);
         void Update_Visibility_Graph_with_new_KF(int idx_KF);
-
-        void Update_Visibility_Graph_A_B_links(std::vector<int> &idx_vl_kf_A,std::vector<int> &idx_vl_kf_B);
-
-        void Fuse_map_points(int &idx_kf_matched);
-
-        void Update_gmap_with_new_matches(int &idx_kf_matched, std::vector<int> &idx_vl_new_kf, std::vector<int> &idx_vl_old_kf);        
-        void Match_list_of_points_into_KF(std::vector<int64> &idx_points, int idx_KF, std::vector<int64> &idx_matched_points);
-        void Update_Visibility_Graph_with_matched_points_into_KF(std::vector<int64> &idx_points, int idx_KF);
-
-        void Match_a_points_with_b_points(std::vector<int64> &idx_a_points,std::vector<int64> &idx_b_points,std::vector<int64> &idx_matched_a_pts,std::vector<int64> &idx_matched_b_pts);    
-
-        void Update_gmap_with_BA(std::vector<int> &idx_vl_new_kf, std::vector<int> &idx_vl_old_kf); 
+        void Update_Visibility_Graph_A_B_links(
+          std::vector<int> & idx_vl_kf_A, std::vector<int> & idx_vl_kf_B);
+        void Match_list_of_points_into_KF(
+          std::vector<int64> & idx_points, int idx_KF,
+          std::vector<int64> & idx_matched_points);
+        void Update_Visibility_Graph_with_matched_points_into_KF(
+          std::vector<int64> & idx_points, int idx_KF);
+        void Match_a_points_with_b_points(
+          std::vector<int64> & idx_a_points, std::vector<int64> & idx_b_points,
+          std::vector<int64> & idx_matched_a_pts,
+          std::vector<int64> & idx_matched_b_pts);
 
     public:
 
         void CLOOP_init();
-        
-        void Set_GlobalMap(GLOBAL_MAP &Gmap_c);
 
-        void Get_GlobalMap(GLOBAL_MAP &Gmap_c);
+        /**
+         * M7.5: install owned detection extract for the next Step/Step2.
+         * Must be a deep-owned map (no aliases into authoritative storage).
+         */
+        void Install_detection_extract(GLOBAL_MAP && owned);
+        void Clear_detection_extract();
+        bool Has_detection_extract() const { return has_detection_extract_; }
 
         void Step(KEYFRAME &kf_cl);
         void Step2(KEYFRAME &kf_cl);
