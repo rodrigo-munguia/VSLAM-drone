@@ -1,8 +1,8 @@
 
-
 #include "gmap.hpp"
 #include "gmap_landmark_audit_log.hpp"
 #include "gmap_map_mgmt_audit.hpp"
+#include "gmap_landmark_identity.hpp"
 
 
 ///------------------------------------------------------------------------------
@@ -10,6 +10,7 @@ void GMAP::Delete_points(std::vector<std::vector<int>> &kf_vg_info)
 {
   
   //cout << Gmap.AnchorsDATA.size() << endl;
+  bool erased_any = false;
 
   for (int64 i = Gmap.AnchorsDATA.size()-1; i >=0 ; i--)
   {
@@ -74,15 +75,18 @@ void GMAP::Delete_points(std::vector<std::vector<int>> &kf_vg_info)
             i, Gmap.AnchorsDATA[i].audit_id, Gmap.AnchorsDATA[i].init_KF,
             n_matches, n_m_tries, static_cast<int>(Gmap.KeyFDATA.size()) - 1);
           Gmap.AnchorsDATA.erase(Gmap.AnchorsDATA.begin()+i);
+          erased_any = true;
           if(PAR.Stats)total_delete_anchors++;
          
           
       }
   }
 
-
-
+  // M1/M2: rebuild LandmarkId → slot after order-preserving compaction.
+  // Lookup may be briefly stale only inside this function (no concurrent readers
+  // of GMAP::Gmap during Delete_points).
+  if (erased_any) {
+    gmap_landmark_id::rebuild_id_to_index(Gmap);
+  }
 
 }
-
-

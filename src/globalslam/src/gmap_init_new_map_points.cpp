@@ -8,6 +8,7 @@
 #include "gmap_birth_reproj.hpp"
 #include "gmap_landmark_audit_log.hpp"
 #include "gmap_map_mgmt_audit.hpp"
+#include "gmap_landmark_identity.hpp"
 
 #include <chrono>
 
@@ -363,7 +364,8 @@ std::vector<int64> GMAP::Init_new_map_points()
                         Anchor.init_KF = idx_current_KF;
                         Anchor.n_kf_matched = 2;
                         Anchor.n_tries_matchs = 0;
-                        Gmap.AnchorsDATA.push_back(Anchor);
+                        // M1/M2: stable LandmarkId; operational refs remain storage index.
+                        gmap_landmark_id::insert_landmark(Gmap, Anchor);
                         if(PAR.Stats)total_init_anchors++;
                         //cout << "x";
                         int64 idx_anchor = Gmap.AnchorsDATA.size()-1;
@@ -377,7 +379,7 @@ std::vector<int64> GMAP::Init_new_map_points()
                         idx_new_points.push_back(idx_anchor);
                         mgmt_uv_births.push_back(uv_curr_pt);
                         gmap_map_mgmt_audit::note_birth(
-                          idx_anchor, Anchor.audit_id, idx_current_KF,
+                          idx_anchor, Gmap.AnchorsDATA[idx_anchor].audit_id, idx_current_KF,
                           Gmap.KeyFDATA[idx_current_KF].keyframe_id, pt_n, uv_curr_pt,
                           birth_rms);
 
@@ -473,7 +475,7 @@ std::vector<int64> GMAP::Init_new_map_points()
             Anchor.init_KF = idx_current_KF;
             Anchor.n_kf_matched = 2;
 
-            Gmap.AnchorsDATA.push_back(Anchor);
+            gmap_landmark_id::insert_landmark(Gmap, Anchor);
             if(PAR.Stats)total_init_anchors++;
 
             int64 idx_anchor = Gmap.AnchorsDATA.size()-1;
@@ -487,7 +489,7 @@ std::vector<int64> GMAP::Init_new_map_points()
             idx_new_points.push_back(idx_anchor);
             mgmt_uv_births.push_back(uv1d);
             gmap_map_mgmt_audit::note_birth(
-              idx_anchor, Anchor.audit_id, idx_current_KF,
+              idx_anchor, Gmap.AnchorsDATA[idx_anchor].audit_id, idx_current_KF,
               Gmap.KeyFDATA[idx_current_KF].keyframe_id, pt_n, uv1d, birth_rms);
 
             if (gmap_landmark_audit::enabled()) {

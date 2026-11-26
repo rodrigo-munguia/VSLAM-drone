@@ -21,6 +21,7 @@
 #endif
 #include "../../common/Transforms/quat2R.hpp"
 #include "gmap.hpp"
+#include "gmap_landmark_identity.hpp"
 #include "../../common/Transforms/Ra2b_TO_Quat_a2b.hpp"
 #include "aux_functions.hpp"
 #include "../../common/ros_slam_identity.hpp"
@@ -193,7 +194,8 @@ void Gslam::clear_for_reference_change(const char * reason)
     gen = run_ctrl_.reset_generation;
     seen_keyframe_ids_.clear();
     clear_pending_keyframes_locked();
-    Gmap.AnchorsDATA.clear();
+    // M1/M2: clear landmarks/lookup; keep next_landmark_id watermark.
+    gmap_landmark_id::clear_landmark_storage(Gmap);
     Gmap.KeyFDATA.clear();
     Gmap.Vgraph.clear();
   }

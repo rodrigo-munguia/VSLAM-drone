@@ -1,4 +1,5 @@
 #include "cloop.hpp"
+#include "gmap_landmark_identity.hpp"
 
 #include <chrono>
 
@@ -7,7 +8,7 @@
 void CLOOP::CLOOP_init()
 { 
   Gmap.idx_ref_pose_slam = 0;
-  Gmap.AnchorsDATA.clear();
+  gmap_landmark_id::clear_landmark_storage(Gmap);
   Gmap.KeyFDATA.clear();
   Gmap.Vgraph.clear();
 
@@ -53,16 +54,14 @@ void CLOOP::CLOOP_init()
 // Rodrigo M. 20222
 void CLOOP::Set_GlobalMap(GLOBAL_MAP &Gmap_c)
 {
-
-  Gmap = Gmap_c;
-
+  gmap_landmark_id::assign_global_map_preserving_id_watermark(Gmap, Gmap_c);
 }
 //------------------------------------------
 // Set global map
 // Rodrigo M. 20222
 void CLOOP::Get_GlobalMap(GLOBAL_MAP &Gmap_c)
 {
-  Gmap_c = Gmap;
+  gmap_landmark_id::assign_global_map_preserving_id_watermark(Gmap_c, Gmap);
 }
 
 //------------------------------------------

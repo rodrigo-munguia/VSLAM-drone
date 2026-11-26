@@ -271,6 +271,15 @@ if(BUILD_TESTING)
       ament_target_dependencies(test_gmap_birth_reproj_gate OpenCV)
       target_link_libraries(test_gmap_birth_reproj_gate ${BLAS_LIBRARIES} ${LAPACK_LIBRARIES})
     endif()
+    # GSLAM-MAP-ARCH-M1/M2: stable LandmarkId + id_to_index lifecycle.
+    ament_add_gtest(test_gmap_landmark_identity_m1_m2
+      test/test_gmap_landmark_identity_m1_m2.cpp)
+    if(TARGET test_gmap_landmark_identity_m1_m2)
+      target_include_directories(test_gmap_landmark_identity_m1_m2 PRIVATE src ../common)
+      ament_target_dependencies(test_gmap_landmark_identity_m1_m2 OpenCV)
+      target_link_libraries(test_gmap_landmark_identity_m1_m2
+        ${BLAS_LIBRARIES} ${LAPACK_LIBRARIES})
+    endif()
     ament_add_gtest(test_gmap_relative_kf_init
       test/test_gmap_relative_kf_init.cpp)
     if(TARGET test_gmap_relative_kf_init)

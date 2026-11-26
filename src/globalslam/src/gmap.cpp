@@ -3,6 +3,7 @@
 #include "gmap_relative_kf_init.hpp"
 #include "gmap_visual_sync.hpp"
 #include "gmap_map_mgmt_audit.hpp"
+#include "gmap_landmark_identity.hpp"
 
 
 //-------------------------------------------
@@ -10,7 +11,8 @@
 void GMAP::InitGmap()
 {
     Gmap.idx_ref_pose_slam = 0;
-    Gmap.AnchorsDATA.clear();
+    // Preserve next_landmark_id high-watermark across reset (obsolete snapshots).
+    gmap_landmark_id::clear_landmark_storage(Gmap);
     Gmap.KeyFDATA.clear();
     Gmap.Vgraph.clear();
 
@@ -60,14 +62,15 @@ void GMAP::Add_Kf(KEYFRAME &kf)
 // Get Global Map
 void GMAP::Get_GlobalMap(GLOBAL_MAP &Gmap_c)
 {
-   Gmap_c = Gmap;
+   // Watermark: dst=Gmap_c (often authoritative) must not regress if older.
+   gmap_landmark_id::assign_global_map_preserving_id_watermark(Gmap_c, Gmap);
 }
 //------------------------------------------
 // Set global map
 // Rodrigo M. 20222
 void GMAP::Set_GlobalMap(GLOBAL_MAP &Gmap_c)
 {
-  Gmap = Gmap_c;
+  gmap_landmark_id::assign_global_map_preserving_id_watermark(Gmap, Gmap_c);
 }
 
 //------------------------------------------

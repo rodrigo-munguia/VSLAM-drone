@@ -2,6 +2,9 @@
 #define LOCALSLAM_TYPES_H
 
 #include <armadillo>
+#include <cstdint>
+#include <cstddef>
+#include <unordered_map>
 #include "opencv2/opencv.hpp"
 #include "../../common/keyframe_types.hpp"
 
@@ -20,6 +23,30 @@ struct KeyFramesData
      cv::Point2f MatchedPoint;  // Matched (measured) position of the feature
  };
 
+/**
+ * Production stable landmark identity (GSLAM-MAP-ARCH-M1/M2).
+ * Explicit construction only — not convertible to/from storage indices.
+ * Convention: value 0 = invalid/unassigned; valid IDs allocate from 1.
+ */
+struct LandmarkId
+{
+  std::uint64_t value{0};
+};
+
+struct LandmarkIdHash
+{
+  std::size_t operator()(LandmarkId id) const noexcept
+  {
+    return static_cast<std::size_t>(id.value);
+  }
+};
+
+inline bool operator==(LandmarkId a, LandmarkId b)
+{
+  return a.value == b.value;
+}
+inline bool operator!=(LandmarkId a, LandmarkId b) { return !(a == b); }
+
 struct G_ANCHOR
 {       
     string feat_type; // Feature tupe: euclidean (XYZ): ID, etc
@@ -30,6 +57,8 @@ struct G_ANCHOR
     int init_KF; //  index of the KeyFrame  where the Feature-anchor was initialized
     int n_kf_matched; // number of kf where the map point has been matched
     int n_tries_matchs; // number of times that the point has been considered to be matched
+    // Production stable identity (independent of storage index). Default invalid.
+    LandmarkId id{};
     // Audit-only persistent identity (GSLAM_LANDMARK_AUDIT_DIR). Unused in production.
     int64_t audit_id{-1};
 };
@@ -40,6 +69,10 @@ struct GLOBAL_MAP
 {
     std::vector<KEYFRAME> KeyFDATA;  // Structure for storing KeyFrames
     std::vector<G_ANCHOR> AnchorsDATA; // Structure for storing map points (anchors)
+    /// LandmarkId → current AnchorsDATA slot (dense vector index).
+    std::unordered_map<LandmarkId, std::size_t, LandmarkIdHash> id_to_index;
+    /// Next ID to allocate (monotonic). Valid IDs are in [1, next_landmark_id).
+    std::uint64_t next_landmark_id{1};
     arma::mat Vgraph; // visibility graph 
     //int idx_Fixed_kf_ref_BA; // index of the i-(oldest) keyFrame that will be considered "fixed" for BA
     int idx_ref_pose_slam;

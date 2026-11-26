@@ -1,4 +1,5 @@
 #include "cloop.hpp"
+#include "gmap_landmark_identity.hpp"
 
 
 void CLOOP::Fuse_map_points(int &idx_kf_matched)
@@ -105,16 +106,10 @@ void CLOOP::Fuse_map_points(int &idx_kf_matched)
     // update visibility graph
     Update_Visibility_Graph_A_B_links(idx_vl_kf_A,idx_vl_kf_B);
 
+    // Inactive path: if ever enabled, keep lookup coherent after erases.
+    gmap_landmark_id::rebuild_id_to_index(Gmap);
 
-    
-    
-    
-    
-    
-    
-    
-    
     int q = 10;    
 
-} 
+}
 
