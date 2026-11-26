@@ -4,6 +4,15 @@
 
 #include <cstring>
 
+// Optional sink for last accepted visual PnP inlier correspondence indices
+// (into idx_pt_matches / image_points). Cleared on entry; filled on accept.
+static thread_local std::vector<int> * g_last_visual_inlier_indices = nullptr;
+
+void CLOOP_set_visual_inlier_sink(std::vector<int> * sink)
+{
+  g_last_visual_inlier_indices = sink;
+}
+
 bool CLOOP::Get_pos_of_current_kf(
   arma::vec::fixed<3> & pos,
   KEYFRAME & kf_cl,
@@ -11,6 +20,9 @@ bool CLOOP::Get_pos_of_current_kf(
   std::vector<cv::Point2d> & image_points,
   int step)
 {
+  if (g_last_visual_inlier_indices) {
+    g_last_visual_inlier_indices->clear();
+  }
   std::vector<cv::Point3f> Points3D;
   std::vector<cv::Point2f> Points2D;
   Points3D.reserve(idx_pt_matches.size());
@@ -60,6 +72,9 @@ bool CLOOP::Get_pos_of_current_kf(
 
   // Downstream Pose_SLAM consumes camera centre in nav only (not PnP R).
   pos = solved.C_nav;
+  if (g_last_visual_inlier_indices) {
+    *g_last_visual_inlier_indices = solved.inlier_indices;
+  }
 
   if (PAR.Stats) {
     CLOOP_Stat cloop_stat;

@@ -47,6 +47,9 @@
 #include <unordered_set>
 #include "gmap.hpp"
 #include "cloop.hpp"
+#include "gmap_loop_proposal.hpp"
+#include "gmap_authoritative_loop.hpp"
+#include <optional>
 
 using namespace std;
 
@@ -216,7 +219,22 @@ private:
 
   bool gmap_get_log_flag{false};
   bool cloop_get_log_flag{false};
+  /** Deprecated M7.4: no longer drives CLOOP→GMAP writeback. */
   bool loop_closed_flag{false};
+
+  // --- M7.4 loop proposal transport (capacity 1) ---
+  std::mutex mutex_proposal_;
+  std::optional<gmap_loop::LoopProposal> proposal_slot_;
+  std::optional<gmap_loop::LoopProposal> deferred_proposal_;
+  std::optional<gmap_loop::ProposalOutcome> proposal_outcome_slot_;
+  /** Active (non-Suspend, not-in-buffer) defer cycles for deferred_proposal_. */
+  int deferred_active_cycles_{0};
+  uint64_t last_processed_proposal_id_{0};
+  uint64_t map_lifetime_{0};
+  uint64_t correction_epoch_{0};
+  bool Try_submit_proposal(gmap_loop::LoopProposal && prop);
+  void Process_authoritative_proposals(GMAP & gmap, uint64_t step_gen);
+  void Deliver_proposal_outcomes(CLOOP & cloop);
 
   /**
    * LC-CONSISTENCY-A3: GMAP is stack-local to GMAP_LOOP; sync commands are

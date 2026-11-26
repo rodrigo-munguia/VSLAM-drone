@@ -22,6 +22,10 @@
 #include "../../common/Transforms/quat2R.hpp"
 #include "gmap.hpp"
 #include "gmap_landmark_identity.hpp"
+#include "gmap_map_clone.hpp"
+#include "gmap_authoritative_loop.hpp"
+#include "gmap_deferred_proposal.hpp"
+#include "gmap_loop_proposal.hpp"
 #include "../../common/Transforms/Ra2b_TO_Quat_a2b.hpp"
 #include "aux_functions.hpp"
 #include "../../common/ros_slam_identity.hpp"
@@ -173,6 +177,16 @@ void Gslam::clear_pending_keyframes_locked()
   new_kf_cl = false;
   gmap_updated = false;
   loop_closed_flag = false;
+  {
+    std::lock_guard<std::mutex> lock(mutex_proposal_);
+    proposal_slot_.reset();
+    deferred_proposal_.reset();
+    proposal_outcome_slot_.reset();
+    deferred_active_cycles_ = 0;
+  }
+  ++map_lifetime_;
+  correction_epoch_ = 0;
+  last_processed_proposal_id_ = 0;
 }
 
 void Gslam::clear_for_reference_change(const char * reason)
@@ -274,6 +288,263 @@ void Gslam::Drain_visual_sync_cmd(GMAP & gmap)
   }
 }
 
+bool Gslam::Try_submit_proposal(gmap_loop::LoopProposal && prop)
+{
+  std::lock_guard<std::mutex> lock(mutex_proposal_);
+  if (prop.proposal_id == 0) {
+    return false;
+  }
+  if (prop.proposal_id == last_processed_proposal_id_) {
+    return false;
+  }
+  if (proposal_slot_.has_value() || deferred_proposal_.has_value()) {
+    return false;
+  }
+  prop.map_lifetime = map_lifetime_;
+  prop.correction_epoch = correction_epoch_;
+  proposal_slot_ = std::move(prop);
+  return true;
+}
+
+void Gslam::Deliver_proposal_outcomes(CLOOP & cloop)
+{
+  std::optional<gmap_loop::ProposalOutcome> out;
+  {
+    std::lock_guard<std::mutex> lock(mutex_proposal_);
+    if (proposal_outcome_slot_.has_value()) {
+      out = std::move(*proposal_outcome_slot_);
+      proposal_outcome_slot_.reset();
+    }
+  }
+  if (out.has_value()) {
+    cloop.Apply_proposal_outcome(*out);
+  }
+}
+
+void Gslam::Process_authoritative_proposals(GMAP & gmap, uint64_t step_gen)
+{
+  // Prefer deferred (waiting for closing KF), else new slot.
+  std::optional<gmap_loop::LoopProposal> prop;
+  bool from_deferred = false;
+  {
+    std::lock_guard<std::mutex> lock(mutex_proposal_);
+    if (deferred_proposal_.has_value()) {
+      prop = std::move(*deferred_proposal_);
+      deferred_proposal_.reset();
+      from_deferred = true;
+    } else if (proposal_slot_.has_value()) {
+      prop = std::move(*proposal_slot_);
+      proposal_slot_.reset();
+      deferred_active_cycles_ = 0;
+    }
+  }
+  (void)from_deferred;
+  if (!prop.has_value()) {
+    return;
+  }
+  if (prop->proposal_id == last_processed_proposal_id_) {
+    return;
+  }
+  GLOBAL_MAP auth;
+  gmap.Get_GlobalMap(auth);
+
+  std::vector<KEYFRAME> kf_buffer_snapshot;
+  {
+    std::lock_guard<std::mutex> lock_kf(mutex_rx_kf);
+    kf_buffer_snapshot = Kf_buffer;
+  }
+
+  const bool suspend =
+    (gmap.Sync_admit_mode() == gmap_visual_sync::AdmitMode::Suspend);
+  int cycles = 0;
+  {
+    std::lock_guard<std::mutex> lock(mutex_proposal_);
+    cycles = deferred_active_cycles_;
+  }
+
+  const auto endpoint = gmap_deferred_proposal::evaluate_closing_endpoint(
+    prop->closing_keyframe_id,
+    prop->map_lifetime,
+    map_lifetime_,
+    auth,
+    kf_buffer_snapshot,
+    gmap.Sync_admit_mode(),
+    gmap.Sync_boundary_keyframe_id(),
+    cycles,
+    suspend);
+
+  {
+    std::lock_guard<std::mutex> lock(mutex_proposal_);
+    deferred_active_cycles_ = endpoint.active_cycles_after;
+  }
+
+  if (endpoint.action == gmap_deferred_proposal::DeferDecision::Action::Reject) {
+    gmap_loop::ProposalOutcome out;
+    out.proposal_id = prop->proposal_id;
+    out.state = gmap_loop::ProposalState::Rejected;
+    out.reason = endpoint.reason;
+    std::lock_guard<std::mutex> lock(mutex_proposal_);
+    proposal_outcome_slot_ = out;
+    last_processed_proposal_id_ = prop->proposal_id;
+    deferred_proposal_.reset();
+    deferred_active_cycles_ = 0;
+    RCLCPP_WARN(
+      this->get_logger(),
+      "Loop proposal %llu rejected (%s) closing_kf=%llu",
+      static_cast<unsigned long long>(prop->proposal_id),
+      endpoint.reason.c_str(),
+      static_cast<unsigned long long>(prop->closing_keyframe_id));
+    return;
+  }
+
+  if (endpoint.action == gmap_deferred_proposal::DeferDecision::Action::Defer) {
+    std::lock_guard<std::mutex> lock(mutex_proposal_);
+    deferred_proposal_ = std::move(*prop);
+    RCLCPP_INFO_THROTTLE(
+      this->get_logger(), *this->get_clock(), 2000,
+      "Loop proposal %llu deferred (%s) closing_kf=%llu cycles=%d",
+      static_cast<unsigned long long>(deferred_proposal_->proposal_id),
+      endpoint.reason.c_str(),
+      static_cast<unsigned long long>(deferred_proposal_->closing_keyframe_id),
+      deferred_active_cycles_);
+    return;
+  }
+
+  // Admitted — clear defer counter before correction.
+  {
+    std::lock_guard<std::mutex> lock(mutex_proposal_);
+    deferred_active_cycles_ = 0;
+  }
+
+  CAM cam;
+  cam.distortions = &PAR.Mono_cam_distortions[0];
+  cam.cc[0] = PAR.Mono_cam_cc_u;
+  cam.cc[1] = PAR.Mono_cam_cc_v;
+  cam.fc[0] = PAR.Mono_cam_fc_u;
+  cam.fc[1] = PAR.Mono_cam_fc_v;
+  cam.alpha_c = PAR.Mono_cam_alpha_c;
+
+  const auto cfg = gmap_authoritative_loop::config_from_par(PAR);
+  auto corr = gmap_authoritative_loop::process_proposal_on_workspace(
+    auth, *prop, cam, cfg);
+
+  gmap_loop::ProposalOutcome outcome;
+  outcome.proposal_id = prop->proposal_id;
+  outcome.state = corr.state;
+  outcome.reason = corr.reason;
+  outcome.delta_L = corr.delta_L;
+  outcome.p_G_final_closing = corr.p_G_final_closing;
+  outcome.match_ba_refine_ran = corr.match_ba_refine_ran;
+
+  if (!corr.committed || !corr.workspace.has_value()) {
+    if (corr.state == gmap_loop::ProposalState::DeferredPendingEndpoint) {
+      std::lock_guard<std::mutex> lock(mutex_proposal_);
+      deferred_proposal_ = std::move(*prop);
+      return;
+    }
+    std::lock_guard<std::mutex> lock(mutex_proposal_);
+    proposal_outcome_slot_ = outcome;
+    last_processed_proposal_id_ = prop->proposal_id;
+    RCLCPP_WARN(
+      this->get_logger(),
+      "Authoritative loop proposal %llu %s (%s)",
+      static_cast<unsigned long long>(prop->proposal_id),
+      gmap_loop::state_name(corr.state),
+      corr.reason.c_str());
+    return;
+  }
+
+  // Commit under exclusive GMAP ownership (no CLOOP writeback).
+  bool send_correction = false;
+  bool notify_control_on_apply = false;
+  bool publish_std = false;
+  bool publish_committed_event = false;
+  uint64_t map_revision = 0;
+  arma::vec::fixed<3> delta_pos = corr.delta_L;
+  CorrectionProvenance send_prov;
+  send_prov.session_id = prop->closing_kf.session_id;
+  send_prov.epoch_id = prop->closing_kf.epoch_id;
+  send_prov.keyframe_id = prop->closing_keyframe_id;
+  send_prov.source = (prop->kind == gmap_loop::Kind::Visual)
+    ? g6d::CorrectionSource::VisualLoop
+    : g6d::CorrectionSource::TagLoop;
+
+  {
+    std::lock_guard<std::mutex> lock_ctrl(mutex_run_ctrl_);
+    std::lock_guard<std::mutex> lock_gm(mutex_get_gm);
+    const bool commit_ok = run_ctrl_.results_belong_to_generation(step_gen) &&
+      run_ctrl_.sources.processing_enabled &&
+      active_ref_.valid &&
+      slam_identity::equal(prop->closing_kf.session_id, active_ref_.session_id) &&
+      prop->closing_kf.epoch_id == active_ref_.epoch_id;
+    if (!commit_ok) {
+      outcome.state = gmap_loop::ProposalState::Rejected;
+      outcome.reason = "generation_or_ref_mismatch";
+    } else {
+    gmap.Set_GlobalMap(*corr.workspace);
+    gmap.Get_GlobalMap(Gmap);  // ferry snapshot for viz / CLOOP refresh
+    ++run_ctrl_.sources.map_revision;
+    map_revision = run_ctrl_.sources.map_revision;
+    ++correction_epoch_;
+    publish_std = true;
+    publish_committed_event = true;
+
+    if (run_ctrl_.should_emit_for(send_prov.source) && !home_capture_active_) {
+      const uint32_t seq = next_correction_seq_++;
+      send_prov.correction_id =
+        (static_cast<uint64_t>(correction_boot_nonce_) << 32) | seq;
+      send_correction = true;
+      notify_control_on_apply = run_ctrl_.should_emit_control_for(send_prov.source);
+      VisualSyncCmd sus;
+      sus.kind = VisualSyncCmdKind::Suspend;
+      sus.correction_id = send_prov.correction_id;
+      Queue_visual_sync_cmd(sus);
+      outcome.state = gmap_loop::ProposalState::LocalSyncPending;
+    } else {
+      outcome.state = gmap_loop::ProposalState::GlobalCommitted;
+    }
+    }  // commit_ok
+  }
+
+  {
+    std::lock_guard<std::mutex> lock(mutex_proposal_);
+    proposal_outcome_slot_ = outcome;
+    last_processed_proposal_id_ = prop->proposal_id;
+  }
+
+  if (outcome.state == gmap_loop::ProposalState::Rejected &&
+    outcome.reason == "generation_or_ref_mismatch")
+  {
+    return;
+  }
+
+  // Refresh CLOOP detection snapshot from authoritative ferry (GMAP→CLOOP only).
+  gmap_updated = true;
+
+  if (publish_committed_event) {
+    Publish_global_loop_committed(
+      send_prov, map_revision, prop->source_label, corr.p_G_final_closing,
+      corr.match_ba_refine_ran);
+  }
+  if (publish_std) {
+    Publish_standard_viz(step_gen);
+  }
+  if (send_correction) {
+    Send_local_slam_pos_update(
+      delta_pos, send_prov.source, send_prov, step_gen, notify_control_on_apply);
+  }
+
+  RCLCPP_INFO(
+    this->get_logger(),
+    "Authoritative loop committed proposal=%llu reval=%s closing=%llu "
+    "delta_L=[%.4f %.4f] ba_refine=%d",
+    static_cast<unsigned long long>(prop->proposal_id),
+    gmap_loop::revalidation_name(corr.reval),
+    static_cast<unsigned long long>(prop->closing_keyframe_id),
+    corr.delta_L[0], corr.delta_L[1],
+    corr.match_ba_refine_ran ? 1 : 0);
+}
+
 void Gslam::GMAP_LOOP()
 {
   GMAP gmap(PAR);
@@ -288,6 +559,7 @@ void Gslam::GMAP_LOOP()
       if (run_ctrl_.consume_reinit_gmap()) {
         gmap.InitGmap();
         c_kf = 0;
+        // map_lifetime_ / proposal invalidation already applied in reset path.
       }
       step_gen = run_ctrl_.reset_generation;
       processing = run_ctrl_.sources.processing_enabled;
@@ -296,19 +568,10 @@ void Gslam::GMAP_LOOP()
     // LC-CONSISTENCY-A3: apply sync gate/rebase before draining new KFs.
     Drain_visual_sync_cmd(gmap);
 
-    {
-      // Lock order: run_ctrl → kf → gm (avoid gm→kf deadlock with reset).
-      std::lock_guard<std::mutex> lock_ctrl(mutex_run_ctrl_);
-      std::lock_guard<std::mutex> lock_kf(mutex_rx_kf);
-      std::lock_guard<std::mutex> lock_gm(mutex_get_gm);
-      if (loop_closed_flag) {
-        loop_closed_flag = false;
-        if (run_ctrl_.results_belong_to_generation(step_gen)) {
-          gmap.Set_GlobalMap(Gmap);
-        }
-        Kf_buffer.clear();
-      }
-    }
+    // M7.4: process proposals after sync drain, before ordinary Update batch.
+    // No CLOOP→GMAP full-map writeback.
+    loop_closed_flag = false;
+    Process_authoritative_proposals(gmap, step_gen);
 
     bool new_kf = false;
     CorrectionProvenance step_prov;
@@ -410,6 +673,7 @@ void Gslam::CLOOP_LOOP()
       std::lock_guard<std::mutex> lock_ctrl(mutex_run_ctrl_);
       if (run_ctrl_.consume_reinit_cloop()) {
         cloop.CLOOP_init();
+        cloop.Set_map_lifetime_and_epoch(map_lifetime_, correction_epoch_);
       }
       step_gen = run_ctrl_.reset_generation;
       processing = run_ctrl_.sources.processing_enabled;
@@ -582,89 +846,26 @@ void Gslam::CLOOP_LOOP()
         cloop.Step(kf_cl);
       }
 
-      if (cloop.Get_close_loop_state() && cloop.Last_loop_committed()) {
-        cloop.Set_close_loop_state(false);
-
-        const std::string loop_src = cloop.Last_loop_source();
-        const g6d::CorrectionSource corr_src =
-          (loop_src == "visual_loop") ? g6d::CorrectionSource::VisualLoop
-                                      : g6d::CorrectionSource::TagLoop;
-        const arma::vec::fixed<3> committed_cam = cloop.Last_committed_camera();
-        const bool refine_ran = cloop.Last_match_ba_refine_ran();
-
-        bool send_correction = false;
-        bool notify_control_on_apply = false;
-        bool publish_std = false;
-        bool publish_committed_event = false;
-        uint64_t map_revision = 0;
-        arma::vec::fixed<3> delta_pos;
-        CorrectionProvenance send_prov;
-        send_prov.session_id = kf_cl.session_id;
-        send_prov.epoch_id = kf_cl.epoch_id;
-        send_prov.keyframe_id = kf_cl.keyframe_id;
-        send_prov.source = corr_src;
-        {
-          // Commit + dispatch decision under one critical section.
-          // Control 'c' is deferred until LS reports applied=true (G5).
-          // Live pause-before-dispatch remains a separate enablement blocker.
-          std::lock_guard<std::mutex> lock_ctrl(mutex_run_ctrl_);
-          std::lock_guard<std::mutex> lock_gm(mutex_get_gm);
-          const bool commit = run_ctrl_.results_belong_to_generation(step_gen) &&
-            run_ctrl_.sources.processing_enabled &&
-            active_ref_.valid &&
-            slam_identity::equal(kf_cl.session_id, active_ref_.session_id) &&
-            kf_cl.epoch_id == active_ref_.epoch_id;
-          if (commit) {
-            cloop.Get_GlobalMap(Gmap);
-            Publish_gmap_data();
-            loop_closed_flag = true;
-            publish_std = true;
-            ++run_ctrl_.sources.map_revision;
-            map_revision = run_ctrl_.sources.map_revision;
-            publish_committed_event = true;
-            if (run_ctrl_.should_emit_for(corr_src) && !home_capture_active_) {
-              delta_pos = cloop.Get_delta_pos();
-              const uint32_t seq = next_correction_seq_++;
-              send_prov.correction_id =
-                (static_cast<uint64_t>(correction_boot_nonce_) << 32) | seq;
-              send_correction = true;
-              notify_control_on_apply = run_ctrl_.should_emit_control_for(corr_src);
-              // Suspend map admits until Local apply outcome (A3 B2/D).
-              VisualSyncCmd sus;
-              sus.kind = VisualSyncCmdKind::Suspend;
-              sus.correction_id = send_prov.correction_id;
-              Queue_visual_sync_cmd(sus);
-            } else if (home_capture_active_ && run_ctrl_.should_emit_for(corr_src)) {
-              RCLCPP_INFO(
-                this->get_logger(),
-                "Global loop committed (%s); withholding Local feedback "
-                "(home-tag capture active)",
-                loop_src.c_str());
-            } else {
-              RCLCPP_INFO(
-                this->get_logger(),
-                "Global loop committed (%s); Local SLAM feedback disabled",
-                loop_src.c_str());
-            }
+      // M7.4: detection submits proposals; GMAP owns correction + sync.
+      {
+        gmap_loop::LoopProposal prop;
+        if (cloop.Take_pending_proposal(prop)) {
+          const uint64_t pid = prop.proposal_id;
+          if (!Try_submit_proposal(std::move(prop))) {
+            gmap_loop::ProposalOutcome rej;
+            rej.proposal_id = pid;
+            rej.state = gmap_loop::ProposalState::Rejected;
+            rej.reason = "proposal_queue_busy_or_duplicate";
+            cloop.Apply_proposal_outcome(rej);
+            RCLCPP_WARN(
+              this->get_logger(),
+              "Dropped loop proposal %llu (queue busy / duplicate)",
+              static_cast<unsigned long long>(pid));
           }
         }
-        if (publish_committed_event) {
-          Publish_global_loop_committed(
-            send_prov, map_revision, loop_src, committed_cam, refine_ran);
-        }
-        if (publish_std) {
-          Publish_standard_viz(step_gen);
-        }
-        if (send_correction) {
-          Send_local_slam_pos_update(
-            delta_pos, corr_src, send_prov, step_gen, notify_control_on_apply);
-        }
-      } else if (cloop.Get_close_loop_state()) {
-        cloop.Set_close_loop_state(false);
-        RCLCPP_WARN(
-          this->get_logger(),
-          "No global loop committed (Pose_SLAM produced no deltas)");
       }
+      Deliver_proposal_outcomes(cloop);
+      cloop.Set_close_loop_state(false);
     }
 
     {

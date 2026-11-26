@@ -50,6 +50,7 @@ struct PoseSlamDiagnostics
   bool ok{false};
   int idx_kf_ref{-1};
   int idx_closing{-1};
+  int idx_tip{-1};
   double initial_error{0};
   double final_error{0};
   arma::vec::fixed<3> t_loop{};
@@ -60,10 +61,36 @@ struct PoseSlamDiagnostics
 };
 
 /**
- * Build R≡I pose graph on map[idx_ref_pose_slam … n_kf), loop Between(closing=tip, ref)
- * with t_loop = t_ref − pnp_C_nav. Returns KF deltas; does not mutate map.
- *
- * Closing KF is map tip (size()-1), matching production CLOOP append-then-optimize.
+ * Explicit Pose_SLAM inputs (M7.4).
+ * Graph variables: [idx_ref … idx_tip] inclusive (tip may be after closing).
+ * Loop factor: Between(x_closing, x_ref, Pose3(I, t_loop)) — original endpoints.
+ */
+struct PoseSlamInputs
+{
+  int idx_ref{-1};
+  int idx_closing{-1};
+  int idx_tip{-1};
+  /** Coherent loop translation (do not rebuild from mixed-time map state). */
+  arma::vec::fixed<3> t_loop{};
+  /** Optional provenance only (diagnostics); not used to rebuild t_loop. */
+  arma::vec::fixed<3> pnp_C_nav{};
+};
+
+/**
+ * Build R≡I pose graph with explicit endpoints and coherent t_loop.
+ * Returns KF deltas for [idx_ref … idx_tip]; does not mutate map.
+ */
+bool run_pose_slam(
+  const GLOBAL_MAP & map,
+  const PoseSlamInputs & inputs,
+  const PoseSlamConfig & config,
+  std::vector<arma::vec::fixed<3>> & delta_kf_pos,
+  std::vector<int> & idx_kf_opt,
+  PoseSlamDiagnostics * diag = nullptr);
+
+/**
+ * M7.3 compatibility: closing = tip, t_loop = t_ref − pnp_C_nav,
+ * window = [idx_ref_pose_slam … tip].
  */
 bool run_pose_slam(
   const GLOBAL_MAP & map,

@@ -142,6 +142,8 @@ set(GLOBALSLAM_COMPONENT_SOURCES
   src/cloop_update_gmap.cpp
   src/cloop_pose_slam.cpp
   src/gmap_graph_correction.cpp
+  src/gmap_authoritative_loop.cpp
+  src/gmap_post_loop_refine.cpp
   src/cloop_fuse_points.cpp
   src/cloop_update_gmap_with_new_matches.cpp
   src/cloop_bundle_adjustment.cpp)
@@ -312,6 +314,43 @@ if(BUILD_TESTING)
           gtsam ${BLAS_LIBRARIES} ${LAPACK_LIBRARIES} ${OpenCV_LIBS})
       elseif(TARGET GTSAM::gtsam)
         target_link_libraries(test_gmap_graph_correction_m7_3
+          GTSAM::gtsam ${BLAS_LIBRARIES} ${LAPACK_LIBRARIES} ${OpenCV_LIBS})
+      endif()
+    endif()
+    # GSLAM-MAP-ARCH-M7.4: authoritative loop cutover.
+    ament_add_gtest(test_gmap_authoritative_loop_m7_4
+      test/test_gmap_authoritative_loop_m7_4.cpp
+      src/gmap_graph_correction.cpp
+      src/gmap_authoritative_loop.cpp
+      src/gmap_post_loop_refine.cpp
+      ../common/Vision/vision.cpp)
+    if(TARGET test_gmap_authoritative_loop_m7_4)
+      target_include_directories(test_gmap_authoritative_loop_m7_4 PRIVATE src ../common)
+      ament_target_dependencies(test_gmap_authoritative_loop_m7_4 OpenCV)
+      if(TARGET gtsam)
+        target_link_libraries(test_gmap_authoritative_loop_m7_4
+          gtsam ${BLAS_LIBRARIES} ${LAPACK_LIBRARIES} ${OpenCV_LIBS})
+      elseif(TARGET GTSAM::gtsam)
+        target_link_libraries(test_gmap_authoritative_loop_m7_4
+          GTSAM::gtsam ${BLAS_LIBRARIES} ${LAPACK_LIBRARIES} ${OpenCV_LIBS})
+      endif()
+    endif()
+    # GSLAM-MAP-ARCH-M7.4.1: Match_list parity + deferred proposal lifecycle.
+    ament_add_gtest(test_gmap_loop_refinement_lifecycle_m7_4_1
+      test/test_gmap_loop_refinement_lifecycle_m7_4_1.cpp
+      src/gmap_graph_correction.cpp
+      src/gmap_authoritative_loop.cpp
+      src/gmap_post_loop_refine.cpp
+      ../common/Vision/vision.cpp)
+    if(TARGET test_gmap_loop_refinement_lifecycle_m7_4_1)
+      target_include_directories(test_gmap_loop_refinement_lifecycle_m7_4_1
+        PRIVATE src ../common)
+      ament_target_dependencies(test_gmap_loop_refinement_lifecycle_m7_4_1 OpenCV)
+      if(TARGET gtsam)
+        target_link_libraries(test_gmap_loop_refinement_lifecycle_m7_4_1
+          gtsam ${BLAS_LIBRARIES} ${LAPACK_LIBRARIES} ${OpenCV_LIBS})
+      elseif(TARGET GTSAM::gtsam)
+        target_link_libraries(test_gmap_loop_refinement_lifecycle_m7_4_1
           GTSAM::gtsam ${BLAS_LIBRARIES} ${LAPACK_LIBRARIES} ${OpenCV_LIBS})
       endif()
     endif()

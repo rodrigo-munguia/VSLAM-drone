@@ -109,6 +109,8 @@ struct SolveAcceptResult
   double mean_reprojection_error{0};
   double d_xy{0};
   int n_inliers{0};
+  /** Correspondence indices into Points3D/Points2D that contributed as inliers. */
+  std::vector<int> inlier_indices;
   const char * reject_reason{"unset"};
 };
 
@@ -187,6 +189,8 @@ inline SolveAcceptResult solve_and_accept(
     out.reject_reason = "unexpected_inliers_type";
     return out;
   }
+  out.inlier_indices.clear();
+  out.inlier_indices.reserve(static_cast<size_t>(inliers.rows));
   for (int k = 0; k < inliers.rows; ++k) {
     const int i = inliers.at<int>(k);
     if (i < 0 || i >= n_pts) {
@@ -208,6 +212,7 @@ inline SolveAcceptResult solve_and_accept(
     }
     sum_e += std::sqrt(
       std::pow(uv_pred.x - uv_obs.x, 2) + std::pow(uv_pred.y - uv_obs.y, 2));
+    out.inlier_indices.push_back(i);
     ++n_in;
   }
   if (n_in < 1) {

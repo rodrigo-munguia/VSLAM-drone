@@ -37,7 +37,7 @@ gtsam::Rot3 identity_rot()
 
 bool run_pose_slam(
   const GLOBAL_MAP & map,
-  const arma::vec::fixed<3> & pnp_C_nav,
+  const PoseSlamInputs & inputs,
   const PoseSlamConfig & config,
   std::vector<arma::vec::fixed<3>> & delta_kf_pos,
   std::vector<int> & idx_kf_opt,
@@ -54,9 +54,16 @@ bool run_pose_slam(
     return false;
   }
 
-  const int idx_kf_ref = map.idx_ref_pose_slam;
-  if (idx_kf_ref < 0 ||
-    static_cast<std::size_t>(idx_kf_ref) >= map.KeyFDATA.size())
+  const int n_kf = static_cast<int>(map.KeyFDATA.size());
+  const int idx_kf_ref = inputs.idx_ref;
+  const int idx_c_kf = inputs.idx_closing;
+  const int idx_tip = inputs.idx_tip >= 0 ? inputs.idx_tip : (n_kf - 1);
+
+  if (idx_kf_ref < 0 || idx_kf_ref >= n_kf ||
+    idx_c_kf < 0 || idx_c_kf >= n_kf ||
+    idx_tip < 0 || idx_tip >= n_kf ||
+    idx_tip < idx_kf_ref ||
+    idx_c_kf < idx_kf_ref || idx_c_kf > idx_tip)
   {
     return false;
   }
@@ -64,7 +71,7 @@ bool run_pose_slam(
   gtsam::NonlinearFactorGraph graph;
   gtsam::Values initial;
 
-  for (int i = idx_kf_ref; i < static_cast<int>(map.KeyFDATA.size()); ++i) {
+  for (int i = idx_kf_ref; i <= idx_tip; ++i) {
     const gtsam::Rot3 R = identity_rot();
     gtsam::Point3 t;
     t(0) = map.KeyFDATA[static_cast<std::size_t>(i)].t_c2n[0];
@@ -98,7 +105,7 @@ bool run_pose_slam(
       config.odo_sigma_kf_z)
       .finished());
 
-  for (int i = idx_kf_ref + 1; i < static_cast<int>(map.KeyFDATA.size()); ++i) {
+  for (int i = idx_kf_ref + 1; i <= idx_tip; ++i) {
     const arma::vec::fixed<3> odo_i =
       map.KeyFDATA[static_cast<std::size_t>(i)].t_c2n -
       map.KeyFDATA[static_cast<std::size_t>(i - 1)].t_c2n;
@@ -123,15 +130,13 @@ bool run_pose_slam(
       config.clo_sigma_kf_att, config.clo_sigma_kf_xy, config.clo_sigma_kf_xy,
       config.clo_sigma_kf_z)
       .finished());
-  const arma::vec::fixed<3> clo_c =
-    map.KeyFDATA[static_cast<std::size_t>(idx_kf_ref)].t_c2n - pnp_C_nav;
+  const arma::vec::fixed<3> clo_c = inputs.t_loop;
   const gtsam::Rot3 R = identity_rot();
   gtsam::Point3 t;
   t(0) = clo_c[0];
   t(1) = clo_c[1];
   t(2) = clo_c[2];
   const gtsam::Pose3 pose_cl(R, t);
-  const int idx_c_kf = static_cast<int>(map.KeyFDATA.size()) - 1;
   graph.emplace_shared<gtsam::BetweenFactor<gtsam::Pose3>>(
     gtsam::Symbol('x', idx_c_kf), gtsam::Symbol('x', idx_kf_ref), pose_cl,
     lc_noise);
@@ -141,9 +146,10 @@ bool run_pose_slam(
       " " + std::to_string(clo_c[0]) + " " + std::to_string(clo_c[1]) + " " +
       std::to_string(clo_c[2]));
     diag->t_loop = clo_c;
-    diag->pnp_C_nav = pnp_C_nav;
+    diag->pnp_C_nav = inputs.pnp_C_nav;
     diag->idx_kf_ref = idx_kf_ref;
     diag->idx_closing = idx_c_kf;
+    diag->idx_tip = idx_tip;
   }
 
   const double initial_error = graph.error(initial);
@@ -157,13 +163,13 @@ bool run_pose_slam(
   std::cout << "cloop-> number of kf: " << map.KeyFDATA.size() << std::endl;
   std::cout << "cloop-> last kf pose:           "
             << map.KeyFDATA.back().t_c2n.t() << std::endl;
-  std::cout << "cloop-> last kf optimized pose: "
+  std::cout << "cloop-> closing kf optimized pose: "
             << result.at<gtsam::Pose3>(gtsam::Symbol('x', idx_c_kf))
                  .translation()
                  .transpose()
             << std::endl;
 
-  for (int i = idx_kf_ref; i < static_cast<int>(map.KeyFDATA.size()); ++i) {
+  for (int i = idx_kf_ref; i <= idx_tip; ++i) {
     const Eigen::Matrix<double, 3, 1> t_o =
       result.at<gtsam::Pose3>(gtsam::Symbol('x', i)).translation();
     arma::vec::fixed<3> dt_kf;
@@ -184,6 +190,33 @@ bool run_pose_slam(
     diag->final_error = final_error;
   }
   return !delta_kf_pos.empty();
+}
+
+bool run_pose_slam(
+  const GLOBAL_MAP & map,
+  const arma::vec::fixed<3> & pnp_C_nav,
+  const PoseSlamConfig & config,
+  std::vector<arma::vec::fixed<3>> & delta_kf_pos,
+  std::vector<int> & idx_kf_opt,
+  PoseSlamDiagnostics * diag)
+{
+  if (map.KeyFDATA.empty()) {
+    delta_kf_pos.clear();
+    idx_kf_opt.clear();
+    return false;
+  }
+  PoseSlamInputs in;
+  in.idx_ref = map.idx_ref_pose_slam;
+  in.idx_closing = static_cast<int>(map.KeyFDATA.size()) - 1;
+  in.idx_tip = in.idx_closing;
+  in.pnp_C_nav = pnp_C_nav;
+  if (in.idx_ref >= 0 &&
+    static_cast<std::size_t>(in.idx_ref) < map.KeyFDATA.size())
+  {
+    in.t_loop =
+      map.KeyFDATA[static_cast<std::size_t>(in.idx_ref)].t_c2n - pnp_C_nav;
+  }
+  return run_pose_slam(map, in, config, delta_kf_pos, idx_kf_opt, diag);
 }
 
 void apply_pose_slam_geometry(

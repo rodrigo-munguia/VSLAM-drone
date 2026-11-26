@@ -8,8 +8,10 @@
 #include "g6b_home_tag_geometry.hpp"
 #include "g6b_home_tag_capture.hpp"
 #include "cloop_visual_retrieve.hpp"
+#include "gmap_loop_proposal.hpp"
 #include <opencv2/opencv.hpp>
 #include <opencv2/aruco.hpp>
+#include <optional>
 #include <string>
 #include <vector>
 
@@ -53,6 +55,13 @@ class CLOOP
         arma::vec::fixed<3> last_sync_p_l_original_;
         uint64_t last_sync_keyframe_id_{0};
 
+        /** M7.4 proposal submission (detection only; no map mutation). */
+        std::optional<gmap_loop::LoopProposal> pending_proposal_;
+        uint64_t next_proposal_id_{1};
+        uint64_t map_lifetime_{0};
+        uint64_t correction_epoch_{0};
+        bool await_proposal_outcome_{false};
+
         double travel_dis;
         int n_cloop_intents;
         int n_kf_home;
@@ -89,6 +98,16 @@ class CLOOP
 
 
         void Update_gmap(arma::vec::fixed<3> &pos, KEYFRAME &kf_cl,int &idx_kf_matched);
+
+        /** M7.4: build proposal from verified geometry (no authoritative mutation). */
+        bool Build_loop_proposal(
+          arma::vec::fixed<3> & pos,
+          KEYFRAME & kf_cl,
+          int idx_kf_matched,
+          gmap_loop::Kind kind,
+          const std::vector<int> * inlier_corr_indices,
+          const std::vector<int> * idx_pt_matches,
+          const std::vector<cv::Point2d> * image_points);
         
         void Pose_SLAM(arma::vec::fixed<3> &pos, std::vector<arma::vec::fixed<3>> &delta_kf_pos, std::vector<int> &idx_kf_opt);
         
@@ -123,7 +142,7 @@ class CLOOP
         bool Get_close_loop_state();
         void Set_close_loop_state(bool state);
 
-        /** True only when Pose_SLAM produced and applied non-empty deltas. */
+        /** Legacy: true when CLOOP still ran Pose_SLAM locally (pre-M7.4). */
         bool Last_loop_committed() const { return last_pose_slam_committed_; }
         const std::string & Last_loop_source() const { return last_loop_source_; }
         arma::vec::fixed<3> Last_committed_camera() const
@@ -131,6 +150,12 @@ class CLOOP
           return last_committed_camera_;
         }
         bool Last_match_ba_refine_ran() const { return last_match_ba_refine_ran_; }
+
+        /** M7.4: take ownership of a verified proposal (if any). */
+        bool Take_pending_proposal(gmap_loop::LoopProposal & out);
+        /** Apply authoritative GMAP outcome to detection bookkeeping. */
+        void Apply_proposal_outcome(const gmap_loop::ProposalOutcome & outcome);
+        void Set_map_lifetime_and_epoch(uint64_t lifetime, uint64_t epoch);
 
         /** Stamp n_kf_home on an already-ready/lifecycle ref (legacy hook). */
         void Set_n_kf_rechome(

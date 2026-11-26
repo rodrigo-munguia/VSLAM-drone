@@ -87,6 +87,141 @@ void CLOOP::Set_close_loop_state(bool state)
 {
   Close_loop = state;
 }
+
+void CLOOP_set_visual_inlier_sink(std::vector<int> * sink);  // cloop_get_pos.cpp
+
+bool CLOOP::Build_loop_proposal(
+  arma::vec::fixed<3> & pos,
+  KEYFRAME & kf_cl,
+  int idx_kf_matched,
+  gmap_loop::Kind kind,
+  const std::vector<int> * inlier_corr_indices,
+  const std::vector<int> * idx_pt_matches,
+  const std::vector<cv::Point2d> * image_points)
+{
+  if (await_proposal_outcome_ || pending_proposal_.has_value()) {
+    cout << "cloop-> skip proposal: outstanding proposal pending" << endl;
+    return false;
+  }
+  if (Gmap.KeyFDATA.empty() ||
+    Gmap.idx_ref_pose_slam < 0 ||
+    static_cast<std::size_t>(Gmap.idx_ref_pose_slam) >= Gmap.KeyFDATA.size())
+  {
+    return false;
+  }
+
+  gmap_loop::LoopProposal prop;
+  prop.proposal_id = next_proposal_id_++;
+  prop.map_lifetime = map_lifetime_;
+  prop.correction_epoch = correction_epoch_;
+  prop.closing_keyframe_id = kf_cl.keyframe_id;
+  prop.pose_graph_ref_keyframe_id =
+    Gmap.KeyFDATA[static_cast<std::size_t>(Gmap.idx_ref_pose_slam)].keyframe_id;
+  prop.matched_historical_keyframe_id = -1;
+  if (idx_kf_matched >= 0 &&
+    static_cast<std::size_t>(idx_kf_matched) < Gmap.KeyFDATA.size())
+  {
+    prop.matched_historical_keyframe_id =
+      static_cast<int64_t>(Gmap.KeyFDATA[static_cast<std::size_t>(idx_kf_matched)]
+                             .keyframe_id);
+  }
+  prop.pnp_C_nav = pos;
+  prop.p_L_original = kf_cl.t_c2n;
+  prop.t_ref_at_verification =
+    Gmap.KeyFDATA[static_cast<std::size_t>(Gmap.idx_ref_pose_slam)].t_c2n;
+  prop.t_loop = prop.t_ref_at_verification - prop.pnp_C_nav;
+  prop.kind = kind;
+  prop.source_label = (kind == gmap_loop::Kind::Tag) ? "tag_loop" : "visual_loop";
+  prop.closing_kf = kf_cl;
+  if (!kf_cl.frame.empty()) {
+    prop.closing_kf.frame = kf_cl.frame.clone();
+  }
+  if (!kf_cl.Descriptors_all.empty()) {
+    prop.closing_kf.Descriptors_all = kf_cl.Descriptors_all.clone();
+  }
+
+  if (kind == gmap_loop::Kind::Visual && inlier_corr_indices && idx_pt_matches &&
+    image_points)
+  {
+    for (int ci : *inlier_corr_indices) {
+      if (ci < 0 || static_cast<std::size_t>(ci) >= idx_pt_matches->size() ||
+        static_cast<std::size_t>(ci) >= image_points->size())
+      {
+        continue;
+      }
+      const int64 idx_pt = (*idx_pt_matches)[static_cast<std::size_t>(ci)];
+      if (idx_pt < 0 ||
+        static_cast<std::size_t>(idx_pt) >= Gmap.AnchorsDATA.size())
+      {
+        continue;
+      }
+      prop.inlier_landmark_ids.push_back(Gmap.AnchorsDATA[static_cast<std::size_t>(idx_pt)].id);
+      prop.inlier_uvs.push_back((*image_points)[static_cast<std::size_t>(ci)]);
+      prop.inlier_xyz_at_verification.push_back(
+        Gmap.AnchorsDATA[static_cast<std::size_t>(idx_pt)].AnchorState);
+    }
+  }
+
+  pending_proposal_ = std::move(prop);
+  last_loop_source_ = pending_proposal_->source_label;
+  last_pose_slam_committed_ = false;
+  Close_loop = false;
+  cout << "cloop-> submitted proposal_id=" << pending_proposal_->proposal_id
+       << " kind=" << pending_proposal_->source_label
+       << " closing_kf=" << pending_proposal_->closing_keyframe_id
+       << " ref_kf=" << pending_proposal_->pose_graph_ref_keyframe_id
+       << " inliers=" << pending_proposal_->inlier_landmark_ids.size() << endl;
+  return true;
+}
+
+bool CLOOP::Take_pending_proposal(gmap_loop::LoopProposal & out)
+{
+  if (!pending_proposal_.has_value()) {
+    return false;
+  }
+  out = std::move(*pending_proposal_);
+  pending_proposal_.reset();
+  await_proposal_outcome_ = true;
+  return true;
+}
+
+void CLOOP::Apply_proposal_outcome(const gmap_loop::ProposalOutcome & outcome)
+{
+  await_proposal_outcome_ = false;
+  if (outcome.state == gmap_loop::ProposalState::GlobalCommitted ||
+    outcome.state == gmap_loop::ProposalState::LocalSyncPending ||
+    outcome.state == gmap_loop::ProposalState::LocalSyncApplied ||
+    outcome.state == gmap_loop::ProposalState::LocalSyncNotApplied ||
+    outcome.state == gmap_loop::ProposalState::LocalSyncUnknown)
+  {
+    // Authoritative global commit: update detection bookkeeping once.
+    travel_dis = 0;
+    n_cloop_intents = 0;
+    last_pose_slam_committed_ = true;
+    last_committed_camera_ = outcome.p_G_final_closing;
+    last_match_ba_refine_ran_ = outcome.match_ba_refine_ran;
+    Delta_kf_n = outcome.delta_L;
+    correction_epoch_++;
+    cout << "cloop-> proposal outcome " << gmap_loop::state_name(outcome.state)
+         << " id=" << outcome.proposal_id
+         << " reason=" << outcome.reason << endl;
+  } else {
+    last_pose_slam_committed_ = false;
+    cout << "cloop-> proposal rejected/failed "
+         << gmap_loop::state_name(outcome.state)
+         << " id=" << outcome.proposal_id
+         << " reason=" << outcome.reason << endl;
+  }
+}
+
+void CLOOP::Set_map_lifetime_and_epoch(uint64_t lifetime, uint64_t epoch)
+{
+  map_lifetime_ = lifetime;
+  correction_epoch_ = epoch;
+  pending_proposal_.reset();
+  await_proposal_outcome_ = false;
+}
+
 void CLOOP::Set_n_kf_rechome(
   const slam_identity::UuidBytes & session_id, uint64_t epoch_id)
 {
@@ -327,8 +462,11 @@ void CLOOP::Step(KEYFRAME &kf_cl)
         diag.last_hist_path_m = sig.hist_path_m;
 
         arma::vec::fixed<3> kf_cl_pos;
+        std::vector<int> inlier_idx;
+        CLOOP_set_visual_inlier_sink(&inlier_idx);
         const bool get_pos = Get_pos_of_current_kf(
           kf_cl_pos, kf_cl, cand.idx_pt_matches, cand.image_points, step);
+        CLOOP_set_visual_inlier_sink(nullptr);
 
         if (!get_pos) {
           diag.last_pnp_reason = "pnp_or_gate_reject";
@@ -345,8 +483,10 @@ void CLOOP::Step(KEYFRAME &kf_cl)
         diag.last_pnp_reason = "ok";
         last_loop_source_ = "visual_loop";
         const int ref_before = Gmap.idx_ref_pose_slam;
-        Update_gmap(kf_cl_pos, kf_cl, cand.idx_kf);
-        diag.committed = last_pose_slam_committed_;
+        const bool submitted = Build_loop_proposal(
+          kf_cl_pos, kf_cl, cand.idx_kf, gmap_loop::Kind::Visual,
+          &inlier_idx, &cand.idx_pt_matches, &cand.image_points);
+        diag.committed = submitted;
         cout << "cloop-> visual LC: matched_kf=" << cand.idx_kf
              << " matches=" << cand.n_matches
              << " pnp_try=" << diag.pnp_attempts
@@ -354,7 +494,7 @@ void CLOOP::Step(KEYFRAME &kf_cl)
              << " pos=[" << kf_cl_pos[0] << " " << kf_cl_pos[1] << " "
              << kf_cl_pos[2] << "]"
              << " ref=" << ref_before
-             << " committed=" << (diag.committed ? 1 : 0)
+             << " proposal=" << (submitted ? 1 : 0)
              << " travel_dis=" << travel_dis
              << " hist_path_m=" << sig.hist_path_m << endl;
         cout << "cloop-> visual LC significance: cur_kf="
@@ -371,10 +511,9 @@ void CLOOP::Step(KEYFRAME &kf_cl)
           store.cloop_stats.back().distance_traveled = travel_dis;
         }
 
-        travel_dis = 0;
-        n_cloop_intents = 0;
+        // travel_dis / cooldown updated only on authoritative GLOBAL_COMMITTED.
         n_kf_wo_cl = 0;
-        Close_loop = last_pose_slam_committed_;
+        Close_loop = false;
         break;
       }
 
@@ -452,17 +591,18 @@ void CLOOP::Step2(KEYFRAME &kf_cl)
       if(get_pos == true && activate_CL_flag == true)
       {
         last_loop_source_ = "tag_loop";
-        Update_gmap(kf_cl_pos,kf_cl,idx_kf_matched);
-        cout << "Distance traveled since origin/last pos update: " << travel_dis << endl;
+        const bool submitted = Build_loop_proposal(
+          kf_cl_pos, kf_cl, idx_kf_matched, gmap_loop::Kind::Tag,
+          nullptr, nullptr, nullptr);
+        cout << "Distance traveled since origin/last pos update: " << travel_dis
+             << " proposal=" << (submitted ? 1 : 0) << endl;
         
         if(PAR.Stats && !store.cloop_stats.empty()){
           store.cloop_stats.back().distance_traveled = travel_dis;
         }          
         
-        travel_dis = 0;
-        n_cloop_intents = 0;
         n_kf_wo_cl = 0;
-        Close_loop = last_pose_slam_committed_;
+        Close_loop = false;
       }
 
     }
