@@ -370,6 +370,93 @@ if(BUILD_TESTING)
           GTSAM::gtsam ${BLAS_LIBRARIES} ${LAPACK_LIBRARIES} ${OpenCV_LIBS})
       endif()
     endif()
+    # GSLAM-MAP-ARCH-M7.6: concurrency / stress / structural invariants.
+    ament_add_gtest(test_gmap_concurrency_m7_6
+      test/test_gmap_concurrency_m7_6.cpp
+      src/gmap_graph_correction.cpp
+      src/gmap_authoritative_loop.cpp
+      src/gmap_post_loop_refine.cpp
+      ../common/Vision/vision.cpp)
+    if(TARGET test_gmap_concurrency_m7_6)
+      target_include_directories(test_gmap_concurrency_m7_6
+        PRIVATE src ../common)
+      ament_target_dependencies(test_gmap_concurrency_m7_6 OpenCV)
+      if(TARGET gtsam)
+        target_link_libraries(test_gmap_concurrency_m7_6
+          gtsam ${BLAS_LIBRARIES} ${LAPACK_LIBRARIES} ${OpenCV_LIBS})
+      elseif(TARGET GTSAM::gtsam)
+        target_link_libraries(test_gmap_concurrency_m7_6
+          GTSAM::gtsam ${BLAS_LIBRARIES} ${LAPACK_LIBRARIES} ${OpenCV_LIBS})
+      endif()
+    endif()
+    # GSLAM-MAP-ARCH-M7.6: detection / GTSAM equivalence.
+    ament_add_gtest(test_gmap_equivalence_m7_6
+      test/test_gmap_equivalence_m7_6.cpp
+      src/gmap_graph_correction.cpp
+      src/gmap_authoritative_loop.cpp
+      src/gmap_post_loop_refine.cpp
+      ../common/Vision/vision.cpp)
+    if(TARGET test_gmap_equivalence_m7_6)
+      target_include_directories(test_gmap_equivalence_m7_6
+        PRIVATE src ../common)
+      ament_target_dependencies(test_gmap_equivalence_m7_6 OpenCV)
+      if(TARGET gtsam)
+        target_link_libraries(test_gmap_equivalence_m7_6
+          gtsam ${BLAS_LIBRARIES} ${LAPACK_LIBRARIES} ${OpenCV_LIBS})
+      elseif(TARGET GTSAM::gtsam)
+        target_link_libraries(test_gmap_equivalence_m7_6
+          GTSAM::gtsam ${BLAS_LIBRARIES} ${LAPACK_LIBRARIES} ${OpenCV_LIBS})
+      endif()
+    endif()
+    # GSLAM-MAP-ARCH-M7.6: lifecycle / transaction / deferred.
+    ament_add_gtest(test_gmap_lifecycle_m7_6
+      test/test_gmap_lifecycle_m7_6.cpp
+      src/gmap_graph_correction.cpp
+      src/gmap_authoritative_loop.cpp
+      src/gmap_post_loop_refine.cpp
+      ../common/Vision/vision.cpp)
+    if(TARGET test_gmap_lifecycle_m7_6)
+      target_include_directories(test_gmap_lifecycle_m7_6
+        PRIVATE src ../common)
+      ament_target_dependencies(test_gmap_lifecycle_m7_6 OpenCV)
+      if(TARGET gtsam)
+        target_link_libraries(test_gmap_lifecycle_m7_6
+          gtsam ${BLAS_LIBRARIES} ${LAPACK_LIBRARIES} ${OpenCV_LIBS})
+      elseif(TARGET GTSAM::gtsam)
+        target_link_libraries(test_gmap_lifecycle_m7_6
+          GTSAM::gtsam ${BLAS_LIBRARIES} ${LAPACK_LIBRARIES} ${OpenCV_LIBS})
+      endif()
+    endif()
+    # GSLAM-MAP-ARCH-M7.7.2: admitted-KF CLOOP eligibility + Local pose provenance.
+    ament_add_gtest(test_gmap_admitted_cloop_m7_7_2
+      test/test_gmap_admitted_cloop_m7_7_2.cpp
+      src/gmap_graph_correction.cpp
+      src/gmap_authoritative_loop.cpp
+      src/gmap_post_loop_refine.cpp
+      ../common/Vision/vision.cpp)
+    if(TARGET test_gmap_admitted_cloop_m7_7_2)
+      target_include_directories(test_gmap_admitted_cloop_m7_7_2
+        PRIVATE src ../common)
+      ament_target_dependencies(test_gmap_admitted_cloop_m7_7_2 OpenCV)
+      if(TARGET gtsam)
+        target_link_libraries(test_gmap_admitted_cloop_m7_7_2
+          gtsam ${BLAS_LIBRARIES} ${LAPACK_LIBRARIES} ${OpenCV_LIBS})
+      elseif(TARGET GTSAM::gtsam)
+        target_link_libraries(test_gmap_admitted_cloop_m7_7_2
+          GTSAM::gtsam ${BLAS_LIBRARIES} ${LAPACK_LIBRARIES} ${OpenCV_LIBS})
+      endif()
+    endif()
+    # GSLAM-MAP-ARCH-M7.6: extraction computational characterization.
+    ament_add_gtest(test_gmap_extraction_perf_m7_6
+      test/test_gmap_extraction_perf_m7_6.cpp
+      ../common/Vision/vision.cpp)
+    if(TARGET test_gmap_extraction_perf_m7_6)
+      target_include_directories(test_gmap_extraction_perf_m7_6
+        PRIVATE src ../common)
+      ament_target_dependencies(test_gmap_extraction_perf_m7_6 OpenCV)
+      target_link_libraries(test_gmap_extraction_perf_m7_6
+        ${BLAS_LIBRARIES} ${LAPACK_LIBRARIES} ${OpenCV_LIBS})
+    endif()
     ament_add_gtest(test_gmap_relative_kf_init
       test/test_gmap_relative_kf_init.cpp)
     if(TARGET test_gmap_relative_kf_init)

@@ -48,6 +48,7 @@
 #include "gmap.hpp"
 #include "cloop.hpp"
 #include "gmap_loop_proposal.hpp"
+#include "gmap_admitted_cloop_queue.hpp"
 #include "gmap_authoritative_loop.hpp"
 #include <optional>
 
@@ -188,6 +189,12 @@ private:
   std::vector<KEYFRAME> Kf_buffer;
   KEYFRAME kf_cl_last;
   bool new_kf_cl{false};
+
+  /** M7.7.2: admitted-KF closing-query eligibility (visual LC). */
+  gmap_admitted_cloop::EligibilityQueue admitted_cloop_q_;
+  std::atomic<uint64_t> closing_query_generation_{0};
+  std::mutex mutex_cloop_processed_;
+  std::unordered_set<uint64_t> cloop_processed_closing_ids_;
 
   parameters PAR;
   bool accept_missing_source_stamp_{false};

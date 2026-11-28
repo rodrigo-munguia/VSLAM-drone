@@ -66,6 +66,12 @@ struct LoopProposal
   /** -1 when absent (e.g. tag loop). */
   int64_t matched_historical_keyframe_id{-1};
 
+  /**
+   * M7.7.2: closing-query sync generation at detection. Reject if Local sync
+   * apply advanced the generation before authoritative consume.
+   */
+  uint64_t closing_query_generation{0};
+
   arma::vec::fixed<3> pnp_C_nav{};
   arma::vec::fixed<3> p_L_original{};
   /** Coherent: t_ref_at_verification − pnp_C_nav (same verification epoch). */

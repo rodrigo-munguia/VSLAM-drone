@@ -119,7 +119,13 @@ bool CLOOP::Build_loop_proposal(
                              .keyframe_id);
   }
   prop.pnp_C_nav = pos;
-  prop.p_L_original = kf_cl.t_c2n;
+  // M7.7.2: prefer immutable Local provenance; never use rewritten Global t_c2n.
+  if (kf_cl.local_original_valid) {
+    prop.p_L_original = kf_cl.t_c2n_local_original;
+  } else {
+    prop.p_L_original = kf_cl.t_c2n;
+  }
+  prop.closing_query_generation = closing_query_generation_;
   prop.t_ref_at_verification =
     Gmap.KeyFDATA[static_cast<std::size_t>(Gmap.idx_ref_pose_slam)].t_c2n;
   prop.t_loop = prop.t_ref_at_verification - prop.pnp_C_nav;
@@ -159,11 +165,13 @@ bool CLOOP::Build_loop_proposal(
   last_loop_source_ = pending_proposal_->source_label;
   last_pose_slam_committed_ = false;
   Close_loop = false;
+  ++diag_verified_proposals_;
   cout << "cloop-> submitted proposal_id=" << pending_proposal_->proposal_id
        << " kind=" << pending_proposal_->source_label
        << " closing_kf=" << pending_proposal_->closing_keyframe_id
        << " ref_kf=" << pending_proposal_->pose_graph_ref_keyframe_id
-       << " inliers=" << pending_proposal_->inlier_landmark_ids.size() << endl;
+       << " inliers=" << pending_proposal_->inlier_landmark_ids.size()
+       << " cq_gen=" << pending_proposal_->closing_query_generation << endl;
   return true;
 }
 
@@ -384,35 +392,68 @@ void CLOOP::Step(KEYFRAME &kf_cl)
     using globalslam::cloop_visual_retrieve::max_attempts_clamped;
     using globalslam::cloop_visual_retrieve::positions_with_current_endpoint;
 
+    // M7.7.2: visual queries must resolve to an already-admitted map node.
+    const int idx_closing = Find_keyframe_index(kf_cl.keyframe_id);
+    if (idx_closing < 0) {
+      cout << "cloop-> visual LC skip: closing_kf=" << kf_cl.keyframe_id
+           << " not in detection extract (admitted-only policy)" << endl;
+      return;
+    }
+    // Authoritative extract geometry + immutable Local provenance; keep caller's
+    // frame if provided (else use extract frame).
+    {
+      const KEYFRAME & mapped =
+        Gmap.KeyFDATA[static_cast<std::size_t>(idx_closing)];
+      const cv::Mat frame_keep =
+        !kf_cl.frame.empty() ? kf_cl.frame : mapped.frame;
+      kf_cl = mapped;
+      if (!frame_keep.empty()) {
+        kf_cl.frame = frame_keep;
+      }
+      if (!kf_cl.local_original_valid) {
+        // Defensive: should have been stamped at admission.
+        kf_cl.t_c2n_local_original = mapped.t_c2n;
+        kf_cl.local_original_valid = true;
+      }
+    }
+
     AttemptDiag diag;
-    diag.current_kf_idx =
-      Gmap.KeyFDATA.empty() ? -1 : static_cast<int>(Gmap.KeyFDATA.size()) - 1;
+    diag.current_kf_idx = idx_closing;
 
     double t_search = 0;
     int n_eligible = 0;
     int n_hist_rejected = 0;
     auto ranked = Collect_ranked_visual_candidates(
       kf_cl, &t_search, &n_eligible, &n_hist_rejected,
-      /*apply_hist_travel_gate=*/true);
+      /*apply_hist_travel_gate=*/true, idx_closing);
     diag.t_search_s = t_search;
     diag.n_eligible = n_eligible;
     diag.n_hist_rejected = n_hist_rejected;
     diag.n_above_threshold = static_cast<int>(ranked.size());
     total_comp_time += t_search;
+    ++diag_matching_attempts_;
 
-    double last_dis = arma::as_scalar(arma::norm(kf_cl.t_c2n - last_pos));
+    // Travel bookkeeping uses immutable Local centres (not Global / sync jumps).
+    const arma::vec::fixed<3> travel_pose = kf_cl.local_original_valid
+      ? kf_cl.t_c2n_local_original
+      : kf_cl.t_c2n;
+    double last_dis = arma::as_scalar(arma::norm(travel_pose - last_pos));
     if (last_dis > 2) {
       travel_dis += last_dis;
-      last_pos = kf_cl.t_c2n;
+      last_pos = travel_pose;
     }
 
     // A2d: visual path commits without sticky activate_CL_flag / GoHome/'c'.
-    // Step is only dispatched when Enable_visual_loop_closure is true (G6d).
-    if (!ranked.empty() && travel_dis > 10) {
+    if (ranked.empty() || !(travel_dis > 10)) {
+      if (!(travel_dis > 10)) {
+        ++diag_travel_gate_reject_steps_;
+      }
+    } else {
       const int n_try =
         max_attempts_clamped(PAR.CL_visual_max_pnp_attempts,
           static_cast<int>(ranked.size()));
       cout << "cloop-> visual LC attempt: cur_kf=" << diag.current_kf_idx
+           << " closing_id=" << kf_cl.keyframe_id
            << " eligible=" << diag.n_eligible
            << " hist_rej=" << diag.n_hist_rejected
            << " above_thr=" << diag.n_above_threshold
@@ -426,7 +467,7 @@ void CLOOP::Step(KEYFRAME &kf_cl)
       }
       cout << endl;
 
-      // Significance uses mapped centres + unappended current CL endpoint.
+      // Significance: mapped centres; closing already in-map → no append.
       std::vector<std::array<double, 3>> mapped;
       mapped.reserve(Gmap.KeyFDATA.size());
       for (const auto & kf : Gmap.KeyFDATA) {
@@ -435,18 +476,16 @@ void CLOOP::Step(KEYFRAME &kf_cl)
       const std::array<double, 3> cur_pose =
         {kf_cl.t_c2n[0], kf_cl.t_c2n[1], kf_cl.t_c2n[2]};
       const auto kf_centres = positions_with_current_endpoint(
-        mapped, cur_pose, /*append_current_endpoint=*/true, nullptr);
-      const int idx_endpoint =
-        static_cast<int>(kf_centres.size()) - 1;
-      const int ba_limit =
-        std::max(0, static_cast<int>(Gmap.KeyFDATA.size()) -
-          PAR.BA_max_n_kf_optimized);
+        mapped, cur_pose, /*append_current_endpoint=*/false, nullptr);
+      const int idx_endpoint = idx_closing;
+      const int ba_limit = std::max(0, idx_closing + 1 - PAR.BA_max_n_kf_optimized);
 
       const auto t_pnp0 = std::chrono::high_resolution_clock::now();
 
       for (int i = 0; i < n_try; ++i) {
         auto & cand = ranked[static_cast<size_t>(i)];
         diag.pnp_attempts++;
+        ++diag_pnp_attempts_;
         diag.selected_kf_idx = cand.idx_kf;
         diag.selected_n_matches = cand.n_matches;
 

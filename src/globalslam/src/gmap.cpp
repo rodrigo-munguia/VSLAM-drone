@@ -33,6 +33,7 @@ void GMAP::InitGmap()
     have_prev_ekf_cam_pose_ = false;
     sync_admit_mode_ = gmap_visual_sync::AdmitMode::Open;
     sync_boundary_keyframe_id_ = 0;
+    newly_admitted_keyframe_ids_.clear();
 
     // initialice store structure for log system statistics            
     store.n_init_anchors = 0;            
@@ -132,6 +133,7 @@ void GMAP::Update()
       }
       Kf_buffer.swap(kept);
     }
+    newly_admitted_keyframe_ids_.clear();
     for(int k = 0; k < Kf_buffer.size() ; k++ )
     {   
         // Add new keyframes to the global map
@@ -143,6 +145,11 @@ void GMAP::Update()
         // Absolute EKF camera pose as admitted (before any relative rewrite).
         const gmap_relative_kf_init::CamPose T_ekf_curr =
           gmap_relative_kf_init::from_keyframe(kf_new);
+        // M7.7.2: immutable Local pose provenance (never rewritten by init/BA).
+        if (!kf_new.local_original_valid) {
+          kf_new.t_c2n_local_original = kf_new.t_c2n;
+          kf_new.local_original_valid = true;
+        }
         gmap_ba_d5::dump_kf_pose("ekf_admit", idx_new, kf_new);
 
         // BA-D6 / CONFIG-A1 / KF-Z-A5: hybrid XY-rel/Z-abs is production default.
@@ -254,6 +261,9 @@ void GMAP::Update()
         if (gmap_map_mgmt_audit::enabled() && k + 1 < static_cast<int>(Kf_buffer.size())) {
           gmap_map_mgmt_audit::flush_kf(Gmap, 0.0);
         }
+
+        // M7.7.2: eligibility only after coherent admit (match + Vgraph for this KF).
+        newly_admitted_keyframe_ids_.push_back(kf_new.keyframe_id);
         
     }
     const int n_kf_drained = static_cast<int>(Kf_buffer.size());

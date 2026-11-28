@@ -66,11 +66,19 @@ class CLOOP
         uint64_t map_lifetime_{0};
         uint64_t correction_epoch_{0};
         bool await_proposal_outcome_{false};
+        /** M7.7.2: stamped onto proposals; must match component generation. */
+        uint64_t closing_query_generation_{0};
 
         double travel_dis;
         int n_cloop_intents;
         int n_kf_home;
         bool activate_CL_flag;
+        /** Opt-in M7.7.2 detection cadence counters (always updated, cheap). */
+        uint64_t diag_matching_attempts_{0};
+        uint64_t diag_pnp_attempts_{0};
+        uint64_t diag_verified_proposals_{0};
+        uint64_t diag_travel_gate_reject_steps_{0};
+        uint64_t diag_cooldown_reject_steps_{0};
         /** G6b.3: epoch-owned capture session + frozen spatial reference. */
         globalslam::g6b_home_tag::HomeTagCaptureSession home_tag_capture_;
 
@@ -88,13 +96,23 @@ class CLOOP
 
         void Get_kf_list_from_uncertainty(KEYFRAME &kf_cl,std::vector<int> &idx_nvl_kf);
 
+        /**
+         * Resolve closing KF index in the installed detection extract by id.
+         * Returns -1 if absent.
+         */
+        int Find_keyframe_index(uint64_t keyframe_id) const;
+
         /** A2d/A3g: enumerate+match+rank historical visual candidates (no home/unc).
-         *  apply_hist_travel_gate: visual Step only (tag Get_matches passes false). */
+         *  apply_hist_travel_gate: visual Step only (tag Get_matches passes false).
+         *  M7.7.2: when closing KF is already in-map, pass its index as
+         *  idx_closing_in_map (>=0) so historical search uses that node (not tip)
+         *  and does not append a fictitious endpoint. */
         std::vector<globalslam::cloop_visual_retrieve::RankedCandidate>
         Collect_ranked_visual_candidates(
           KEYFRAME & kf_cl, double * t_search_s, int * n_eligible_out = nullptr,
           int * n_hist_rejected_out = nullptr,
-          bool apply_hist_travel_gate = true);
+          bool apply_hist_travel_gate = true,
+          int idx_closing_in_map = -1);
        
         void Get_matches(KEYFRAME &kf_cl, std::vector<int> &idx_pt_matches, std::vector<cv::Point2d> &image_points ,int &idx_kf_matched);
         
@@ -162,6 +180,20 @@ class CLOOP
         /** Apply authoritative GMAP outcome to detection bookkeeping. */
         void Apply_proposal_outcome(const gmap_loop::ProposalOutcome & outcome);
         void Set_map_lifetime_and_epoch(uint64_t lifetime, uint64_t epoch);
+        void Set_closing_query_generation(uint64_t gen)
+        {
+          closing_query_generation_ = gen;
+        }
+        uint64_t Closing_query_generation() const
+        {
+          return closing_query_generation_;
+        }
+        uint64_t Diag_matching_attempts() const { return diag_matching_attempts_; }
+        uint64_t Diag_pnp_attempts() const { return diag_pnp_attempts_; }
+        uint64_t Diag_verified_proposals() const
+        {
+          return diag_verified_proposals_;
+        }
 
         /** Stamp n_kf_home on an already-ready/lifecycle ref (legacy hook). */
         void Set_n_kf_rechome(

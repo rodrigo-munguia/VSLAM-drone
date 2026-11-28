@@ -80,6 +80,9 @@ class GMAP
         gmap_visual_sync::AdmitMode sync_admit_mode_{
           gmap_visual_sync::AdmitMode::Open};
         uint64_t sync_boundary_keyframe_id_{0};
+
+        /** M7.7.2: keyframe_ids successfully admitted in the last Update(). */
+        std::vector<uint64_t> newly_admitted_keyframe_ids_;
     
     public:
         void InitGmap();
@@ -87,6 +90,14 @@ class GMAP
         void  Add_Kf(KEYFRAME &kf);
 
         void  Update();
+
+        /** Drain ids admitted by the most recent Update() (FIFO order). */
+        std::vector<uint64_t> Take_newly_admitted_keyframe_ids()
+        {
+          std::vector<uint64_t> out;
+          out.swap(newly_admitted_keyframe_ids_);
+          return out;
+        }
 
         void Get_GlobalMap(GLOBAL_MAP &Gmap_c);
         void Set_GlobalMap(GLOBAL_MAP &Gmap_c);

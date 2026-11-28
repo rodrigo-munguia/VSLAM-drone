@@ -26,6 +26,13 @@ struct KEYFRAME
   arma::mat::fixed<3, 3> Rn2r;
   arma::mat::fixed<3, 3> Rn2c;
   arma::vec::fixed<3> t_c2n;
+  /**
+   * M7.7.2: immutable LocalSLAM camera centre at GMAP admission, captured
+   * before relative/hybrid Global pose rewrite. Never updated by BA / Pose_SLAM
+   * / post-loop BA. Used for δ_L = p_G_final − p_L_original and travel gates.
+   */
+  arma::vec::fixed<3> t_c2n_local_original{};
+  bool local_original_valid{false};
   std::vector<cv::KeyPoint> keyPoints_all;
   cv::Mat Descriptors_all;
   // Persistent GlobalSLAM landmark associations (stable IDs; not storage indices).

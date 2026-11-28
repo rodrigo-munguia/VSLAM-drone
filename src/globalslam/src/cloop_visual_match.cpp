@@ -82,11 +82,23 @@ void CLOOP::Match_list_of_points_into_KF(std::vector<int64> &idx_points, int idx
 // A2d: all unlinked historical KFs (no early Vgraph break), no home/uncertainty
 // filters, ranked by match count. Used by visual Step (PnP fallback) and as the
 // top-1 source for legacy Get_matches (tag Step2 still calls Get_matches).
+int CLOOP::Find_keyframe_index(uint64_t keyframe_id) const
+{
+  for (std::size_t i = 0; i < Gmap.KeyFDATA.size(); ++i) {
+    if (Gmap.KeyFDATA[i].keyframe_id == keyframe_id) {
+      return static_cast<int>(i);
+    }
+  }
+  return -1;
+}
+
 // A3g: optional hist-travel gate before ORB (visual only; tag passes false).
+// M7.7.2: when idx_closing_in_map >= 0 the closing KF is already authoritative.
 std::vector<globalslam::cloop_visual_retrieve::RankedCandidate>
 CLOOP::Collect_ranked_visual_candidates(
   KEYFRAME & kf_cl, double * t_search_s, int * n_eligible_out,
-  int * n_hist_rejected_out, bool apply_hist_travel_gate)
+  int * n_hist_rejected_out, bool apply_hist_travel_gate,
+  int idx_closing_in_map)
 {
   using globalslam::cloop_visual_retrieve::RankedCandidate;
   using globalslam::cloop_visual_retrieve::enumerate_unlinked_historical;
@@ -110,18 +122,39 @@ CLOOP::Collect_ranked_visual_candidates(
     return ranked;
   }
 
-  const int idx_current_kf = static_cast<int>(Gmap.KeyFDATA.size()) - 1;
-  int ba_limit =
-    static_cast<int>(Gmap.KeyFDATA.size()) - PAR.BA_max_n_kf_optimized;
+  const bool in_map = idx_closing_in_map >= 0 &&
+    idx_closing_in_map < static_cast<int>(Gmap.KeyFDATA.size());
+  const int idx_current_kf = in_map
+    ? idx_closing_in_map
+    : static_cast<int>(Gmap.KeyFDATA.size()) - 1;
+  // Historical search: preceding closing only; apply BA-window like tip policy.
+  int ba_limit = in_map
+    ? (idx_closing_in_map + 1) - PAR.BA_max_n_kf_optimized
+    : static_cast<int>(Gmap.KeyFDATA.size()) - PAR.BA_max_n_kf_optimized;
   if (ba_limit < 0) {
     ba_limit = 0;
+  }
+  if (in_map && ba_limit > idx_closing_in_map) {
+    ba_limit = idx_closing_in_map;  // never include self or newer
   }
 
   std::vector<int> idx_nvl_kf =
     enumerate_unlinked_historical(Gmap.Vgraph, idx_current_kf, ba_limit);
 
+  // Explicit self / newer exclusion (defensive; ba_limit already bounds).
+  if (in_map) {
+    std::vector<int> filtered;
+    filtered.reserve(idx_nvl_kf.size());
+    for (int idx : idx_nvl_kf) {
+      if (idx >= 0 && idx < idx_closing_in_map) {
+        filtered.push_back(idx);
+      }
+    }
+    idx_nvl_kf.swap(filtered);
+  }
+
   // A3g: filter by KF-chain traveled distance before ORB matching (visual only).
-  // Current CL query KF is not yet appended to GLOBAL_MAP — append its pose.
+  // In-map closing: use mapped centres without appending a fictitious tip.
   if (apply_hist_travel_gate) {
     std::vector<std::array<double, 3>> mapped;
     mapped.reserve(Gmap.KeyFDATA.size());
@@ -131,10 +164,12 @@ CLOOP::Collect_ranked_visual_candidates(
     const std::array<double, 3> cur_pose =
       {kf_cl.t_c2n[0], kf_cl.t_c2n[1], kf_cl.t_c2n[2]};
     bool appended = false;
+    const bool append_endpoint = !in_map;
     const auto positions = positions_with_current_endpoint(
-      mapped, cur_pose, /*append_current_endpoint=*/true, &appended);
-    const int idx_endpoint =
-      static_cast<int>(positions.size()) - 1;
+      mapped, cur_pose, append_endpoint, &appended);
+    const int idx_endpoint = in_map
+      ? idx_closing_in_map
+      : static_cast<int>(positions.size()) - 1;
     int n_rej = 0;
     idx_nvl_kf = filter_min_historical_travel(
       idx_nvl_kf, positions, idx_endpoint,
@@ -237,7 +272,8 @@ void CLOOP::Get_matches(KEYFRAME &kf_cl, std::vector<int> &idx_pt_matches,std::v
   idx_kf_matched = -1;
   double t_search = 0;
   const auto ranked = Collect_ranked_visual_candidates(
-    kf_cl, &t_search, nullptr, nullptr, /*apply_hist_travel_gate=*/false);
+    kf_cl, &t_search, nullptr, nullptr, /*apply_hist_travel_gate=*/false,
+    /*idx_closing_in_map=*/-1);
   (void)t_search;
   if (ranked.empty()) {
     return;

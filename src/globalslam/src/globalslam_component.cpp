@@ -24,6 +24,7 @@
 #include "gmap_landmark_identity.hpp"
 #include "gmap_map_clone.hpp"
 #include "gmap_authoritative_read.hpp"
+#include "gmap_m7_runtime_diag.hpp"
 #include "gmap_authoritative_loop.hpp"
 #include "gmap_deferred_proposal.hpp"
 #include "gmap_loop_proposal.hpp"
@@ -187,6 +188,12 @@ void Gslam::clear_pending_keyframes_locked()
   ++map_lifetime_;
   correction_epoch_ = 0;
   last_processed_proposal_id_ = 0;
+  admitted_cloop_q_.clear();
+  {
+    std::lock_guard<std::mutex> lock(mutex_cloop_processed_);
+    cloop_processed_closing_ids_.clear();
+  }
+  closing_query_generation_.fetch_add(1);
 }
 
 void Gslam::clear_for_reference_change(const char * reason)
@@ -272,15 +279,26 @@ void Gslam::Drain_visual_sync_cmd(GMAP & gmap)
         "SYNC_FAILED / not applied correction_id=%llu — admit open, no rebase",
         static_cast<unsigned long long>(cmd.correction_id));
       break;
-    case VisualSyncCmdKind::Applied:
+    case VisualSyncCmdKind::Applied: {
       gmap.Sync_on_local_applied(cmd.dx, cmd.dy, cmd.watermark);
+      // M7.7.2: confirmed Local apply invalidates pre-sync closing queries.
+      const uint64_t cq =
+        closing_query_generation_.fetch_add(1) + 1;
+      admitted_cloop_q_.invalidate_all_as_obsolete();
+      {
+        std::lock_guard<std::mutex> lock(mutex_cloop_processed_);
+        cloop_processed_closing_ids_.clear();
+      }
       RCLCPP_INFO(
         this->get_logger(),
-        "SYNC_COMPLETE correction_id=%llu rebased d=[%.4f %.4f] watermark=%llu",
+        "SYNC_COMPLETE correction_id=%llu rebased d=[%.4f %.4f] watermark=%llu "
+        "cq_gen=%llu",
         static_cast<unsigned long long>(cmd.correction_id),
         cmd.dx, cmd.dy,
-        static_cast<unsigned long long>(cmd.watermark));
+        static_cast<unsigned long long>(cmd.watermark),
+        static_cast<unsigned long long>(cq));
       break;
+    }
     case VisualSyncCmdKind::None:
       break;
   }
@@ -296,6 +314,18 @@ bool Gslam::Try_submit_proposal(gmap_loop::LoopProposal && prop)
     return false;
   }
   if (proposal_slot_.has_value() || deferred_proposal_.has_value()) {
+    return false;
+  }
+  // M7.7.2: reject in-flight detection that crossed a Local sync boundary.
+  if (prop.kind == gmap_loop::Kind::Visual &&
+    prop.closing_query_generation != closing_query_generation_.load())
+  {
+    RCLCPP_WARN(
+      this->get_logger(),
+      "Rejected obsolete closing-query proposal %llu cq_gen=%llu current=%llu",
+      static_cast<unsigned long long>(prop.proposal_id),
+      static_cast<unsigned long long>(prop.closing_query_generation),
+      static_cast<unsigned long long>(closing_query_generation_.load()));
     return false;
   }
   prop.map_lifetime = map_lifetime_;
@@ -343,11 +373,49 @@ void Gslam::Process_authoritative_proposals(GMAP & gmap, uint64_t step_gen)
   if (prop->proposal_id == last_processed_proposal_id_) {
     return;
   }
+  if (prop->kind == gmap_loop::Kind::Visual &&
+    prop->closing_query_generation != closing_query_generation_.load())
+  {
+    gmap_loop::ProposalOutcome out;
+    out.proposal_id = prop->proposal_id;
+    out.state = gmap_loop::ProposalState::Rejected;
+    out.reason = "obsolete_closing_query_generation";
+    {
+      std::lock_guard<std::mutex> lock(mutex_proposal_);
+      proposal_outcome_slot_ = out;
+      last_processed_proposal_id_ = prop->proposal_id;
+      deferred_active_cycles_ = 0;
+    }
+    RCLCPP_WARN(
+      this->get_logger(),
+      "Authoritative reject proposal %llu obsolete cq_gen=%llu current=%llu",
+      static_cast<unsigned long long>(prop->proposal_id),
+      static_cast<unsigned long long>(prop->closing_query_generation),
+      static_cast<unsigned long long>(closing_query_generation_.load()));
+    return;
+  }
   GLOBAL_MAP auth;
   {
-    std::lock_guard<std::mutex> lock_gm(mutex_get_gm);
-    gmap.Extract_detection_snapshot(auth);
+    const uint64_t tw0 = gmap_m7_runtime_diag::now_ns();
+    uint64_t tw1 = tw0;
+    uint64_t tc1 = tw0;
+    std::size_t n_obs = 0;
+    {
+      std::lock_guard<std::mutex> lock_gm(mutex_get_gm);
+      tw1 = gmap_m7_runtime_diag::now_ns();
+      gmap.Extract_detection_snapshot(auth);
+      tc1 = gmap_m7_runtime_diag::now_ns();
+      for (const auto & kf : auth.KeyFDATA) {
+        n_obs += kf.Matched_landmark_ids.size();
+      }
+    }
+    gmap_m7_runtime_diag::log_extract(
+      "proposal_seed", tw1 - tw0, tc1 - tw1, auth.KeyFDATA.size(),
+      auth.AnchorsDATA.size(), n_obs, auth_map_seq_, map_lifetime_);
   }
+  gmap_m7_runtime_diag::log_identity_snapshot(
+    "proposal_consume_start", prop->proposal_id, prop->closing_keyframe_id,
+    map_lifetime_, correction_epoch_, auth);
 
   std::vector<KEYFRAME> kf_buffer_snapshot;
   {
@@ -519,6 +587,17 @@ void Gslam::Process_authoritative_proposals(GMAP & gmap, uint64_t step_gen)
     return;
   }
 
+  // Serialize identity evidence outside mutex_get_gm (workspace already owned).
+  if (publish_committed_event && corr.workspace.has_value()) {
+    gmap_m7_runtime_diag::log_identity_snapshot(
+      "authoritative_commit", prop->proposal_id, prop->closing_keyframe_id,
+      map_lifetime_, correction_epoch_, *corr.workspace);
+    gmap_m7_runtime_diag::log_event(
+      "authoritative_commit", prop->proposal_id,
+      prop->closing_keyframe_id, map_revision,
+      corr.reason.empty() ? gmap_loop::revalidation_name(corr.reval) : corr.reason);
+  }
+
   if (publish_committed_event) {
     Publish_global_loop_committed(
       send_prov, map_revision, prop->source_label, corr.p_G_final_closing,
@@ -592,6 +671,7 @@ void Gslam::GMAP_LOOP()
     }
 
     if (new_kf) {
+      std::vector<uint64_t> admitted_ids;
       {
         std::lock_guard<std::mutex> lock_gm(mutex_get_gm);
         for (size_t i = 0; i < kf_batch.size(); i++) {
@@ -603,6 +683,36 @@ void Gslam::GMAP_LOOP()
         }
         gmap.Update();
         ++auth_map_seq_;
+        admitted_ids = gmap.Take_newly_admitted_keyframe_ids();
+        const uint64_t life = map_lifetime_;
+        const uint64_t cq_gen = closing_query_generation_.load();
+        const GLOBAL_MAP & am = gmap.Authoritative_map();
+        for (uint64_t kid : admitted_ids) {
+          {
+            std::lock_guard<std::mutex> lock(mutex_cloop_processed_);
+            if (cloop_processed_closing_ids_.count(kid) != 0) {
+              continue;
+            }
+          }
+          gmap_admitted_cloop::Eligibility e;
+          e.keyframe_id = kid;
+          e.map_lifetime = life;
+          e.closing_query_generation = cq_gen;
+          for (const auto & kf : am.KeyFDATA) {
+            if (kf.keyframe_id == kid) {
+              if (kf.local_original_valid) {
+                e.p_L_original = kf.t_c2n_local_original;
+                e.p_L_original_valid = true;
+              }
+              break;
+            }
+          }
+          if (admitted_cloop_q_.push(e)) {
+            gmap_m7_runtime_diag::log_funnel(
+              "eligible_push", kid, life, cq_gen,
+              "admitted_map_kf");
+          }
+        }
       }
 
       // Validate generation+enable and commit shared state under one critical
@@ -706,6 +816,7 @@ void Gslam::CLOOP_LOOP()
     }
     (void)step_gen;
 
+    // Tag / home-tag path may still use CLOSE_LOOP snapshots.
     bool have_cl_kf = false;
     KEYFRAME kf_cl;
     if (processing) {
@@ -714,6 +825,25 @@ void Gslam::CLOOP_LOOP()
         new_kf_cl = false;
         kf_cl = kf_cl_last;
         have_cl_kf = true;
+      }
+    }
+
+    // M7.7.2: visual LC consumes admitted-KF eligibility (not CLOSE_LOOP stream).
+    bool have_admitted_visual = false;
+    KEYFRAME kf_admitted_visual;
+    gmap_admitted_cloop::Eligibility elig{};
+    if (processing) {
+      bool run_vis_gate = false;
+      {
+        std::lock_guard<std::mutex> lock_ctrl(mutex_run_ctrl_);
+        run_vis_gate = run_ctrl_.sources.should_run_visual_loop();
+      }
+      if (run_vis_gate) {
+        auto e = admitted_cloop_q_.try_pop(life, closing_query_generation_.load());
+        if (e.has_value()) {
+          elig = *e;
+          have_admitted_visual = true;
+        }
       }
     }
 
@@ -843,7 +973,7 @@ void Gslam::CLOOP_LOOP()
       }
     }
 
-    if (have_cl_kf) {
+    auto run_detection_step = [&](bool do_tag, bool do_vis, KEYFRAME & kf_query) {
       {
         std::lock_guard<std::mutex> lock_ac(mutex_activate_CL);
         if (activate_CL_flag) {
@@ -851,60 +981,97 @@ void Gslam::CLOOP_LOOP()
           cloop.Set_Activate_Deactivate_CL(true);
         }
       }
-
-      bool run_tag = false;
-      bool run_vis = false;
-      {
-        std::lock_guard<std::mutex> lock_ctrl(mutex_run_ctrl_);
-        run_tag = run_ctrl_.sources.should_run_tag_loop();
-        run_vis = run_ctrl_.sources.should_run_visual_loop();
+      if (!do_tag && !do_vis) {
+        return;
       }
-
-      // M7.5: owned extract under auth-map lock; matching/PnP outside lock.
-      if (run_tag || run_vis) {
-        GLOBAL_MAP extract;
-        bool got = false;
-        {
-          std::lock_guard<std::mutex> lock_gm(mutex_get_gm);
-          if (auth_gmap_ != nullptr) {
-            auth_gmap_->Extract_detection_snapshot(extract);
-            cloop_last_extract_seq_ = auth_map_seq_;
-            got = true;
+      GLOBAL_MAP extract;
+      bool got = false;
+      const uint64_t tw0 = gmap_m7_runtime_diag::now_ns();
+      uint64_t tw1 = tw0;
+      uint64_t tc1 = tw0;
+      std::size_t n_obs = 0;
+      {
+        std::lock_guard<std::mutex> lock_gm(mutex_get_gm);
+        tw1 = gmap_m7_runtime_diag::now_ns();
+        if (auth_gmap_ != nullptr) {
+          auth_gmap_->Extract_detection_snapshot(extract);
+          cloop_last_extract_seq_ = auth_map_seq_;
+          got = true;
+          for (const auto & kf : extract.KeyFDATA) {
+            n_obs += kf.Matched_landmark_ids.size();
           }
         }
-        if (got) {
-          cloop.Install_detection_extract(std::move(extract));
-          cloop.Set_map_lifetime_and_epoch(life, epoch);
-          if (run_tag) {
-            cloop.Step2(kf_cl);
-          } else {
-            cloop.Step(kf_cl);
-          }
-          cloop.Clear_detection_extract();
-        }
+        tc1 = gmap_m7_runtime_diag::now_ns();
       }
+      if (!got) {
+        return;
+      }
+      gmap_m7_runtime_diag::log_extract(
+        "cloop_detection", tw1 - tw0, tc1 - tw1, extract.KeyFDATA.size(),
+        extract.AnchorsDATA.size(), n_obs, cloop_last_extract_seq_, life);
+      cloop.Install_detection_extract(std::move(extract));
+      cloop.Set_map_lifetime_and_epoch(life, epoch);
+      cloop.Set_closing_query_generation(closing_query_generation_.load());
+      if (do_tag) {
+        cloop.Step2(kf_query);
+      } else {
+        cloop.Step(kf_query);
+      }
+      cloop.Clear_detection_extract();
 
-      // M7.4: detection submits proposals; GMAP owns correction + sync.
-      {
-        gmap_loop::LoopProposal prop;
-        if (cloop.Take_pending_proposal(prop)) {
-          const uint64_t pid = prop.proposal_id;
-          if (!Try_submit_proposal(std::move(prop))) {
-            gmap_loop::ProposalOutcome rej;
-            rej.proposal_id = pid;
-            rej.state = gmap_loop::ProposalState::Rejected;
-            rej.reason = "proposal_queue_busy_or_duplicate";
-            cloop.Apply_proposal_outcome(rej);
-            RCLCPP_WARN(
-              this->get_logger(),
-              "Dropped loop proposal %llu (queue busy / duplicate)",
-              static_cast<unsigned long long>(pid));
-          }
+      gmap_loop::LoopProposal prop;
+      if (cloop.Take_pending_proposal(prop)) {
+        const uint64_t pid = prop.proposal_id;
+        if (!Try_submit_proposal(std::move(prop))) {
+          gmap_loop::ProposalOutcome rej;
+          rej.proposal_id = pid;
+          rej.state = gmap_loop::ProposalState::Rejected;
+          rej.reason = "proposal_queue_busy_or_duplicate";
+          cloop.Apply_proposal_outcome(rej);
+          RCLCPP_WARN(
+            this->get_logger(),
+            "Dropped loop proposal %llu (queue busy / duplicate)",
+            static_cast<unsigned long long>(pid));
         }
       }
       Deliver_proposal_outcomes(cloop);
       cloop.Set_close_loop_state(false);
+    };
+
+    if (have_admitted_visual) {
+      {
+        std::lock_guard<std::mutex> lock(mutex_cloop_processed_);
+        cloop_processed_closing_ids_.insert(elig.keyframe_id);
+      }
+      gmap_m7_runtime_diag::log_funnel(
+        "eligible_consume", elig.keyframe_id, elig.map_lifetime,
+        elig.closing_query_generation, "visual_query");
+      // Resolve query KF from a fresh extract inside the lambda; seed identity.
+      kf_admitted_visual.keyframe_id = elig.keyframe_id;
+      if (elig.p_L_original_valid) {
+        kf_admitted_visual.t_c2n_local_original = elig.p_L_original;
+        kf_admitted_visual.local_original_valid = true;
+      }
+      run_detection_step(false, true, kf_admitted_visual);
+      gmap_m7_runtime_diag::log_funnel(
+        "after_step", elig.keyframe_id, cloop.Diag_pnp_attempts(),
+        cloop.Diag_verified_proposals(), "pnp_attempts_cum,verified_cum");
     }
+
+    // Tag loop: CLOSE_LOOP stream only (not authoritative visual queries).
+    if (have_cl_kf) {
+      bool run_tag = false;
+      {
+        std::lock_guard<std::mutex> lock_ctrl(mutex_run_ctrl_);
+        run_tag = run_ctrl_.sources.should_run_tag_loop();
+      }
+      if (run_tag) {
+        run_detection_step(true, false, kf_cl);
+      }
+    }
+
+    // Always deliver outcomes (e.g. after GMAP processed a deferred proposal).
+    Deliver_proposal_outcomes(cloop);
 
     {
       std::lock_guard<std::mutex> lock_log(mutex_log_cloop);
