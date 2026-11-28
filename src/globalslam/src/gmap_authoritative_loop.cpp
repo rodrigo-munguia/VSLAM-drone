@@ -1,6 +1,7 @@
 #include "gmap_authoritative_loop.hpp"
 
 #include <algorithm>
+#include <chrono>
 #include <cmath>
 #include <iostream>
 
@@ -9,6 +10,7 @@
 #include "gmap_landmark_identity.hpp"
 #include "gmap_map_clone.hpp"
 #include "gmap_post_loop_refine.hpp"
+#include "gmap_vgraph_runtime_diag.hpp"
 #include "gmap_visual_sync.hpp"
 
 namespace gmap_authoritative_loop
@@ -304,16 +306,36 @@ CorrectionResult process_proposal_on_workspace(
     if (match_dec.valid) {
       std::vector<int> idx_vl_new;
       std::vector<int> idx_vl_old;
+      gmap_vgraph_runtime_diag::write_snapshot("pre_loop_commit", workspace);
+      gmap_vgraph_runtime_diag::begin_gmap_update();
+      const auto txn_t0 = std::chrono::steady_clock::now();
       gmap_post_loop_refine::run_post_loop_matching(
         workspace, idx_closing, match_dec.index, cam, config.match,
         idx_vl_new, idx_vl_old);
+      const auto match_t1 = std::chrono::steady_clock::now();
+      gmap_vgraph_runtime_diag::write_snapshot("post_loop_refine", workspace);
+      double ba_ms = 0.0;
       if (config.enable_post_loop_ba) {
+        const auto ba_t0 = std::chrono::steady_clock::now();
         gmap_graph_correction::PostLoopBaDiagnostics ba_diag;
         gmap_graph_correction::run_post_loop_ba(
           workspace, idx_vl_new, idx_vl_old, cam, config.ba, &ba_diag);
+        const auto ba_t1 = std::chrono::steady_clock::now();
+        ba_ms = std::chrono::duration<double, std::milli>(ba_t1 - ba_t0).count();
         refine_ran = true;
         // BA reject retains Pose_SLAM + Match_list observations (production).
       }
+      const auto txn_t1 = std::chrono::steady_clock::now();
+      const double match_ms =
+        std::chrono::duration<double, std::milli>(match_t1 - txn_t0).count();
+      const double total_ms =
+        std::chrono::duration<double, std::milli>(txn_t1 - txn_t0).count();
+      gmap_vgraph_runtime_diag::log_loop_txn_overhead(
+        prop.proposal_id,
+        gmap_vgraph_runtime_diag::tls_update_rebuild_count(),
+        gmap_vgraph_runtime_diag::tls_update_rebuild_ms(),
+        match_ms, ba_ms, total_ms);
+      gmap_vgraph_runtime_diag::write_snapshot("authoritative_commit", workspace);
     }
   }
 

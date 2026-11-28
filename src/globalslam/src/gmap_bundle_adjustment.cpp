@@ -5,6 +5,7 @@
 #include "gmap_ba_d5_log.hpp"
 #include "gmap_map_mgmt_audit.hpp"
 #include "gmap_landmark_identity.hpp"
+#include "gmap_vgraph_runtime_diag.hpp"
 
 #include <array>
 #include <chrono>
@@ -88,10 +89,12 @@ void GMAP::Bundle_adjustment()
         
         int n_latest_kf = PAR.BA_min_n_latest_kf_to_optimize ;
         
+        std::vector<int> idx_visibility_added;
         if (n_latest_kf < PAR.BA_max_n_kf_optimized)
         {
           std::vector<int> vl_kf = Get_n_oldest_visually_linked_kf(Gmap.KeyFDATA.size()-1,PAR.BA_max_n_kf_optimized-(n_latest_kf+1), 2 );     
           idx_kf_to_optimize = vl_kf;
+          idx_visibility_added = vl_kf;
         } 
              
         
@@ -326,6 +329,13 @@ void GMAP::Bundle_adjustment()
         static_cast<int>(idx_points.size()), n_obs, ba_elapsed_s, f_valid_update,
         static_cast<int>(Gmap.AnchorsDATA.size()));
     }
+    gmap_vgraph_runtime_diag::log_ba_window(
+      static_cast<int>(Gmap.KeyFDATA.size()) - 1,
+      idx_kf_to_optimize,
+      idx_visibility_added,
+      static_cast<int>(graph.size()),
+      ba_elapsed_s * 1e3,
+      f_valid_update);
 
 
 

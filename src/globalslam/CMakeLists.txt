@@ -427,6 +427,18 @@ if(BUILD_TESTING)
           GTSAM::gtsam ${BLAS_LIBRARIES} ${LAPACK_LIBRARIES} ${OpenCV_LIBS})
       endif()
     endif()
+    # GSLAM-LC-POLICY-A1.1: exact visibility graph integrity.
+    ament_add_gtest(test_gmap_visibility_graph_integrity_a1_1
+      test/test_gmap_visibility_graph_integrity_a1_1.cpp
+      src/gmap_post_loop_refine.cpp
+      ../common/Vision/vision.cpp)
+    if(TARGET test_gmap_visibility_graph_integrity_a1_1)
+      target_include_directories(test_gmap_visibility_graph_integrity_a1_1
+        PRIVATE src ../common)
+      ament_target_dependencies(test_gmap_visibility_graph_integrity_a1_1 OpenCV)
+      target_link_libraries(test_gmap_visibility_graph_integrity_a1_1
+        ${BLAS_LIBRARIES} ${LAPACK_LIBRARIES} ${OpenCV_LIBS})
+    endif()
     # GSLAM-MAP-ARCH-M7.7.2: admitted-KF CLOOP eligibility + Local pose provenance.
     ament_add_gtest(test_gmap_admitted_cloop_m7_7_2
       test/test_gmap_admitted_cloop_m7_7_2.cpp

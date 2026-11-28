@@ -1,5 +1,7 @@
 #include "gmap.hpp"
 #include "gmap_landmark_identity.hpp"
+#include "gmap_visibility_graph_exact.hpp"
+#include "gmap_vgraph_runtime_diag.hpp"
 
 //------------------------------------------------------------------------------------------------
 std::vector<int> GMAP::Get_n_oldest_visually_linked_kf(int idx_kf,int n_oldest, int min_v_strength )
@@ -41,30 +43,15 @@ std::vector<int> GMAP::Get_n_oldest_visually_linked_kf(int idx_kf,int n_oldest, 
 
 
 //------------------------------------------------------------------
+// LC-POLICY-A1.1: exact rebuild replaces incremental pair decrements.
 void GMAP::Update_Visibility_Graph_with_deleted_points(std::vector<std::vector<int>> &kf_vg_info)
 {
-
-    for(int i = 0; i < kf_vg_info.size(); i++ )
-    {
-
-        
-        for(int j = 0; j < kf_vg_info[i].size(); j++ )
-        { 
-          for(int k = j+1 ; k < kf_vg_info[i].size(); k++)
-          {
-              int idx_kf_ref = kf_vg_info[i][j];
-
-              int idx_kf_l = kf_vg_info[i][k];
-            // cout << Gmap.Vgraph << endl;
-              Gmap.Vgraph.at(idx_kf_ref,idx_kf_l)--;
-              Gmap.Vgraph.at(idx_kf_l,idx_kf_ref)--;
-            // cout << Gmap.Vgraph << endl;
-          }  
-        }
-
-    }
-
-
+  (void)kf_vg_info;
+  gmap_vgraph_runtime_diag::rebuild_with_log(
+    Gmap, "deleted_points",
+    [](GLOBAL_MAP & m) {
+      return gmap_visibility_graph_exact::rebuild_exact_visibility_graph(m);
+    });
 }
 
 
@@ -100,125 +87,28 @@ std::vector<int> GMAP::Get_idx_visually_linked_to_KF(int idx_KF)
 
 
 //----------------------------------------------------------------
+// LC-POLICY-A1.1: exact rebuild from authoritative observations.
 void GMAP::Update_Visibility_Graph_with_new_KF()
 {
-  int idx_KF = Gmap.KeyFDATA.size()-1;
-
-  int vg_size = Gmap.KeyFDATA.size();
-  Gmap.Vgraph.resize(vg_size,vg_size); // increase size of visibility graph by one
-  Gmap.Vgraph(vg_size-1,vg_size-1) = 0;
-
-  arma::rowvec vg_row;
-  vg_row.zeros(vg_size);
-
-  
-  // -----for taking into account the visual link with 0-kf
-  if(idx_KF == 2)
-  {
-    for(int i = 0; i < Gmap.KeyFDATA[idx_KF-1].Matched_landmark_ids.size();i++)
-    {
-      const LandmarkId lid = Gmap.KeyFDATA[idx_KF-1].Matched_landmark_ids[i];
-      std::size_t idx_pt = 0;
-      if (!gmap_landmark_id::resolve_landmark_index(Gmap, lid, idx_pt)) {
-        continue;
-      }
-
-      int idx_init_kf = Gmap.AnchorsDATA[idx_pt].init_KF;
-
-      if  (idx_init_kf == 1)
-      {
-        Gmap.Vgraph.at(0,1)++;
-        Gmap.Vgraph.at(1,0)++;
-      }
-    }
-  }
-  //----------------------------------------------------------
-
-  for(int i = 0; i < Gmap.KeyFDATA[idx_KF].Matched_landmark_ids.size();i++)
-  {
-      const LandmarkId lid = Gmap.KeyFDATA[idx_KF].Matched_landmark_ids[i];
-
-      for (int j = 0; j < Gmap.KeyFDATA.size()-1 ; j++)
-      {
-        for(int k = 0; k < Gmap.KeyFDATA[j].Matched_landmark_ids.size();k++)
-        {
-           if (lid == Gmap.KeyFDATA[j].Matched_landmark_ids[k])
-           {
-             vg_row[j]++;
-             break;
-           } 
-
-        }
-
-      }
-      //int idx_init_kf = Gmap.AnchorsDATA[idx_pt].init_KF;
-
-      //vg_row[idx_init_kf]++;
-
-  }
-  
-  arma::vec vg_col = vg_row.t();      
-  Gmap.Vgraph.row(vg_size-1)  = vg_row;
-  Gmap.Vgraph.col(vg_size-1) = vg_col;
-
-
-
-
+  gmap_vgraph_runtime_diag::rebuild_with_log(
+    Gmap, "new_kf_association",
+    [](GLOBAL_MAP & m) {
+      return gmap_visibility_graph_exact::rebuild_exact_visibility_graph(m);
+    });
 }
 
 //--------------------------------------------------------------------------------
+// LC-POLICY-A1.1: exact rebuild (birth / retro-match incremental path retired).
 void GMAP::Update_Visibility_Graph_with_matches_of_new_points(std::vector<int64> &idx_new_points, std::vector<int> &idx_kf_m, std::vector<int64> &idx_pt_m )
 {
-    
-    int n_new_points = idx_new_points.size();
-    
-    // add visual relation beetween the keyframes used for initialized the new points
-    for (int i = 0; i < n_new_points; i++)
-    {
-      int idx_kf_c = Gmap.AnchorsDATA[idx_new_points[i]].init_KF;
-      int idx_kf_p = idx_kf_c - 1;
-      if (Gmap.AnchorsDATA[idx_new_points[i]].feat_type == "g_anchor")
-        {
-          Gmap.Vgraph.at(idx_kf_c,idx_kf_p)++;
-          Gmap.Vgraph.at(idx_kf_p,idx_kf_c)++;
-        
-        }
-    }
-
-
-   //----------------------------------------------------------------------------
-  
-    for (int i = 0; i < idx_kf_m.size(); i++)
-    {
-        int idx_kf = idx_kf_m[i];
-        int64 idx_pt = idx_pt_m[i];
-        
-        int idx_kf_pt = Gmap.AnchorsDATA[idx_pt].init_KF;
-        
-        //cout << Gmap.Vgraph << endl;
-        Gmap.Vgraph.at(idx_kf,idx_kf_pt)++;
-        Gmap.Vgraph.at(idx_kf_pt,idx_kf)++;
-        //cout << Gmap.Vgraph << endl;
-        int q = 10;
-
-        if (Gmap.AnchorsDATA[idx_pt].feat_type == "g_anchor")
-        {
-          int idx_kf_prev_pt = idx_kf_pt-1;
-          Gmap.Vgraph.at(idx_kf,idx_kf_prev_pt)++;
-          Gmap.Vgraph.at(idx_kf_prev_pt,idx_kf)++;
-          
-        }
-
-
-
-
-    }
-
-
-
-
-
-
+  (void)idx_new_points;
+  (void)idx_kf_m;
+  (void)idx_pt_m;
+  gmap_vgraph_runtime_diag::rebuild_with_log(
+    Gmap, "new_points_matches",
+    [](GLOBAL_MAP & m) {
+      return gmap_visibility_graph_exact::rebuild_exact_visibility_graph(m);
+    });
 }
 
 

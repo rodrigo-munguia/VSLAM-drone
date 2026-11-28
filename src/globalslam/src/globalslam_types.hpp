@@ -51,7 +51,9 @@ struct GLOBAL_MAP
     std::unordered_map<LandmarkId, std::size_t, LandmarkIdHash> id_to_index;
     /// Next ID to allocate (monotonic). Valid IDs are in [1, next_landmark_id).
     std::uint64_t next_landmark_id{1};
-    arma::mat Vgraph; // visibility graph 
+    /// Exact KF covisibility (derived): V(i,j)=|L_i ∩ L_j| for i≠j; diagonal 0.
+    /// See gmap_visibility_graph_exact.hpp (GSLAM-LC-POLICY-A1.1).
+    arma::mat Vgraph;
     //int idx_Fixed_kf_ref_BA; // index of the i-(oldest) keyFrame that will be considered "fixed" for BA
     int idx_ref_pose_slam;
     

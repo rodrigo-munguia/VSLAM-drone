@@ -6,6 +6,7 @@
 #include "gmap_landmark_identity.hpp"
 #include "gmap_identity_runtime_audit.hpp"
 #include "gmap_map_clone.hpp"
+#include "gmap_vgraph_runtime_diag.hpp"
 
 
 //-------------------------------------------
@@ -108,6 +109,7 @@ void GMAP::Update()
     static double total_comp_time = 0;
     static double step = 0;
     step++;
+    gmap_vgraph_runtime_diag::begin_gmap_update();
     //------------------------------------------------------
     // After a close loop perform a full update of the visibility graph
     
@@ -116,6 +118,7 @@ void GMAP::Update()
     // Grow the global map: Add new Keyframes and new Map Point
     auto ct_i = std::chrono::high_resolution_clock::now();  
     bool new_kf = false;
+    double ba_ms_local = 0.0;
     // LC-CONSISTENCY-A3: drop incompatible KFs (suspend / pre-sync watermark).
     {
       std::vector<KEYFRAME> kept;
@@ -279,13 +282,19 @@ void GMAP::Update()
            
            // Update visibility graph           
            Update_Visibility_Graph_with_deleted_points(kf_vg_info);
+           gmap_vgraph_runtime_diag::write_snapshot("after_delete", Gmap);
            
            //cout << Gmap.Vgraph << endl;
            
            // G6d: incremental BA is independently gated (feedback is separate).
            if (PAR.Enable_global_ba) {
+             const auto ba_t0 = std::chrono::high_resolution_clock::now();
              Bundle_adjustment();
+             const auto ba_t1 = std::chrono::high_resolution_clock::now();
+             ba_ms_local =
+               std::chrono::duration<double, std::milli>(ba_t1 - ba_t0).count();
              gmap_identity_runtime_audit::check_boundary("after_ba", Gmap);
+             gmap_vgraph_runtime_diag::write_snapshot("after_ba", Gmap);
            } else {
              Delta_kf_n.zeros();
            } 
@@ -309,6 +318,21 @@ void GMAP::Update()
      auto elapsed = std::chrono::duration_cast<std::chrono::nanoseconds>(ct_f - ct_i);
      double comp_time_per_step = elapsed.count() * 1e-9;   
      total_comp_time = total_comp_time + comp_time_per_step;
+     if (gmap_vgraph_runtime_diag::enabled()) {
+       std::size_t n_obs = 0;
+       for (const auto & kf : Gmap.KeyFDATA) {
+         n_obs += kf.Matched_landmark_ids.size();
+       }
+       gmap_vgraph_runtime_diag::log_gmap_update_overhead(
+         comp_time_per_step * 1e3, ba_ms_local, n_kf_drained,
+         static_cast<int>(Gmap.KeyFDATA.size()),
+         static_cast<int>(Gmap.AnchorsDATA.size()),
+         static_cast<int>(n_obs));
+       gmap_vgraph_runtime_diag::flush_insert_counters("gmap_update");
+       if (new_kf) {
+         gmap_vgraph_runtime_diag::write_snapshot("ordinary_update", Gmap);
+       }
+     }
      if (gmap_map_mgmt_audit::enabled() && new_kf) {
        const double per_kf =
          n_kf_drained > 0 ? comp_time_per_step / static_cast<double>(n_kf_drained)

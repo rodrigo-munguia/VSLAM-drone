@@ -1,4 +1,6 @@
 #include "gmap.hpp"
+#include "gmap_visibility_graph_exact.hpp"
+#include "gmap_vgraph_runtime_diag.hpp"
 #include "gmap_landmark_audit_log.hpp"
 #include "gmap_map_mgmt_audit.hpp"
 #include "gmap_landmark_identity.hpp"
@@ -87,12 +89,13 @@ void GMAP::Match_Gmap_points_into_new_KF()
               {
                 int64 Idx_matched_A = Idx_candidate_A[Descriptor_idx_A]; // storage index of matched map point
 
-                Gmap.KeyFDATA[idx_KF].Matched_landmark_ids.push_back(
-                  Gmap.AnchorsDATA[Idx_matched_A].id);
-                Gmap.KeyFDATA[idx_KF].UV_Matched_points.push_back(pt_m);
-                
-                Gmap.AnchorsDATA[Idx_matched_A].n_kf_matched++;
-                if (gmap_landmark_audit::enabled()) {
+                const auto ins = gmap_visibility_graph_exact::try_insert_kf_observation(
+                  Gmap, idx_KF, Gmap.AnchorsDATA[Idx_matched_A].id, pt_m,
+                  /*increment_n_kf_matched=*/true);
+                gmap_vgraph_runtime_diag::note_insert_result_enum(ins);
+                if (ins == gmap_visibility_graph_exact::InsertObservationResult::Inserted &&
+                  gmap_landmark_audit::enabled())
+                {
                   const auto & A = Gmap.AnchorsDATA[Idx_matched_A];
                   gmap_landmark_audit::log_association(
                     A.audit_id, Idx_matched_A, idx_KF,
@@ -208,21 +211,21 @@ void GMAP::Match_New_points_into_previous_KF(std::vector<int64> &idx_new_points,
                     double max_inov_error = (double)PAR.VM_max_inov_error;
                     if(dis < max_inov_error)
                     {
-                      Gmap.KeyFDATA[idx_kf_target].Matched_landmark_ids.push_back(
-                        Gmap.AnchorsDATA[idx_new_pt].id);
-                      Gmap.KeyFDATA[idx_kf_target].UV_Matched_points.push_back(pt_m);
-                
-                      Gmap.AnchorsDATA[idx_new_pt].n_kf_matched++; 
-                      
-                      idx_kf_m.push_back(idx_kf_target); 
-                      idx_pt_m.push_back(idx_new_pt); 
-                      if (gmap_landmark_audit::enabled()) {
-                        const auto & A = Gmap.AnchorsDATA[idx_new_pt];
-                        gmap_landmark_audit::log_association(
-                          A.audit_id, idx_new_pt, idx_kf_target,
-                          Gmap.KeyFDATA[idx_kf_target].keyframe_id, Descriptor_idx_KF,
-                          pt_m.x, pt_m.y, dis, matches[k].distance,
-                          "match_new_into_previous_kf", false);
+                      const auto ins = gmap_visibility_graph_exact::try_insert_kf_observation(
+                        Gmap, idx_kf_target, Gmap.AnchorsDATA[idx_new_pt].id, pt_m,
+                        /*increment_n_kf_matched=*/true);
+                      gmap_vgraph_runtime_diag::note_insert_result_enum(ins);
+                      if (ins == gmap_visibility_graph_exact::InsertObservationResult::Inserted) {
+                        idx_kf_m.push_back(idx_kf_target);
+                        idx_pt_m.push_back(idx_new_pt);
+                        if (gmap_landmark_audit::enabled()) {
+                          const auto & A = Gmap.AnchorsDATA[idx_new_pt];
+                          gmap_landmark_audit::log_association(
+                            A.audit_id, idx_new_pt, idx_kf_target,
+                            Gmap.KeyFDATA[idx_kf_target].keyframe_id, Descriptor_idx_KF,
+                            pt_m.x, pt_m.y, dis, matches[k].distance,
+                            "match_new_into_previous_kf", false);
+                        }
                       }
                      // cout << "Map point: " << idx_new_pt << " init in kf: " << Gmap.AnchorsDATA[idx_new_pt].init_KF << " matched in kf: " << idx_kf_target << endl;
 

@@ -1,5 +1,7 @@
 #include "cloop.hpp"
 #include "gmap_landmark_identity.hpp"
+#include "gmap_visibility_graph_exact.hpp"
+#include "gmap_vgraph_runtime_diag.hpp"
 #include "cloop_visual_retrieve.hpp"
 
 #include <chrono>
@@ -58,13 +60,13 @@ void CLOOP::Match_list_of_points_into_KF(std::vector<int64> &idx_points, int idx
             if(dis < max_inov_error)
               {
                 int64 Idx_matched_A = Idx_candidate_A[Descriptor_idx_A]; // storage index
-                
-                idx_matched_points.push_back(Idx_matched_A);
-                Gmap.KeyFDATA[idx_KF].Matched_landmark_ids.push_back(
-                  Gmap.AnchorsDATA[Idx_matched_A].id);
-                Gmap.KeyFDATA[idx_KF].UV_Matched_points.push_back(pt_m);
-                
-                Gmap.AnchorsDATA[Idx_matched_A].n_kf_matched++; 
+                const auto ins = gmap_visibility_graph_exact::try_insert_kf_observation(
+                  Gmap, idx_KF, Gmap.AnchorsDATA[Idx_matched_A].id, pt_m,
+                  /*increment_n_kf_matched=*/true);
+                gmap_vgraph_runtime_diag::note_insert_result_enum(ins);
+                if (ins == gmap_visibility_graph_exact::InsertObservationResult::Inserted) {
+                  idx_matched_points.push_back(Idx_matched_A);
+                }
               } 
         
           }
@@ -140,6 +142,10 @@ CLOOP::Collect_ranked_visual_candidates(
 
   std::vector<int> idx_nvl_kf =
     enumerate_unlinked_historical(Gmap.Vgraph, idx_current_kf, ba_limit);
+
+  // A1.2 opt-in: characterize visibility exclusions (does not change selection).
+  gmap_vgraph_runtime_diag::log_visibility_exclusions(
+    kf_cl.keyframe_id, idx_current_kf, ba_limit, Gmap);
 
   // Explicit self / newer exclusion (defensive; ba_limit already bounds).
   if (in_map) {
@@ -356,12 +362,12 @@ void CLOOP::Match_Gmap_points_into_KF(int idx_KF)
             if(dis < max_inov_error)
               {
                 int64 Idx_matched_A = Idx_candidate_A[Descriptor_idx_A]; // storage index
-
-                Gmap.KeyFDATA[idx_KF].Matched_landmark_ids.push_back(
-                  Gmap.AnchorsDATA[Idx_matched_A].id);
-                Gmap.KeyFDATA[idx_KF].UV_Matched_points.push_back(pt_m);
-                
-                Gmap.AnchorsDATA[Idx_matched_A].n_kf_matched++; 
+                {
+                  const auto ins = gmap_visibility_graph_exact::try_insert_kf_observation(
+                    Gmap, idx_KF, Gmap.AnchorsDATA[Idx_matched_A].id, pt_m,
+                    /*increment_n_kf_matched=*/true);
+                  gmap_vgraph_runtime_diag::note_insert_result_enum(ins);
+                }
               } 
         
           }

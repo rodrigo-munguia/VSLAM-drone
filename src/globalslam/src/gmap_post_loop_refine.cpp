@@ -7,6 +7,8 @@
 #include <opencv2/features2d.hpp>
 
 #include "gmap_landmark_identity.hpp"
+#include "gmap_visibility_graph_exact.hpp"
+#include "gmap_vgraph_runtime_diag.hpp"
 
 namespace gmap_post_loop_refine
 {
@@ -137,12 +139,15 @@ void match_list_of_points_into_kf(
     if (dis < max_inov_error) {
       const int64_t Idx_matched_A =
         Idx_candidate_A[static_cast<std::size_t>(Descriptor_idx_A)];
-      idx_matched_points.push_back(Idx_matched_A);
-      map.KeyFDATA[static_cast<std::size_t>(idx_KF)].Matched_landmark_ids.push_back(
-        map.AnchorsDATA[static_cast<std::size_t>(Idx_matched_A)].id);
-      map.KeyFDATA[static_cast<std::size_t>(idx_KF)].UV_Matched_points.push_back(
-        pt_m);
-      map.AnchorsDATA[static_cast<std::size_t>(Idx_matched_A)].n_kf_matched++;
+      const LandmarkId lid =
+        map.AnchorsDATA[static_cast<std::size_t>(Idx_matched_A)].id;
+      const auto ins = gmap_visibility_graph_exact::try_insert_kf_observation(
+        map, idx_KF, lid, pt_m, /*increment_n_kf_matched=*/true);
+      gmap_vgraph_runtime_diag::note_insert_result_enum(ins);
+      if (ins == gmap_visibility_graph_exact::InsertObservationResult::Inserted) {
+        idx_matched_points.push_back(Idx_matched_A);
+      }
+      // AlreadyPresent / ConflictUv: no duplicate obs, counter, or BA factor.
     }
   }
 }
@@ -152,39 +157,14 @@ void update_visibility_graph_with_matched_points(
   const std::vector<int64_t> & idx_points,
   int idx_KF)
 {
-  if (map.Vgraph.empty() || idx_KF < 0 ||
-    static_cast<std::size_t>(idx_KF) >= map.KeyFDATA.size())
-  {
-    return;
-  }
-  for (std::size_t i = 0; i < idx_points.size(); ++i) {
-    const int64_t idx_pt = idx_points[i];
-    if (idx_pt < 0 ||
-      static_cast<std::size_t>(idx_pt) >= map.AnchorsDATA.size())
-    {
-      continue;
-    }
-    const LandmarkId lid =
-      map.AnchorsDATA[static_cast<std::size_t>(idx_pt)].id;
-    for (int j = 0; j < static_cast<int>(map.KeyFDATA.size()); ++j) {
-      if (j == idx_KF) {
-        continue;
-      }
-      for (std::size_t k = 0;
-           k < map.KeyFDATA[static_cast<std::size_t>(j)]
-                 .Matched_landmark_ids.size();
-           ++k)
-      {
-        if (map.KeyFDATA[static_cast<std::size_t>(j)].Matched_landmark_ids[k] ==
-          lid)
-        {
-          map.Vgraph.at(idx_KF, j)++;
-          map.Vgraph.at(j, idx_KF)++;
-          break;
-        }
-      }
-    }
-  }
+  // LC-POLICY-A1.1: exact rebuild from observations (idx_points unused).
+  (void)idx_points;
+  (void)idx_KF;
+  gmap_vgraph_runtime_diag::rebuild_with_log(
+    map, "post_loop_matched_points",
+    [](GLOBAL_MAP & m) {
+      return gmap_visibility_graph_exact::rebuild_exact_visibility_graph(m);
+    });
 }
 
 void run_post_loop_matching(
